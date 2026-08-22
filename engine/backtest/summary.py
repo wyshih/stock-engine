@@ -32,10 +32,12 @@ logger = logging.getLogger(__name__)
 # 固定門檻的比較會退化成門檻鬆緊的比較（doc/BACKTEST_LOG.md #28）。
 MATCHED_TOP_PCT = 0.015
 
+# 2026-08-22 使用者從原本的十個裡選定這五個，砍掉的 m4/m5/m7/m9/m10 全是
+# 去大盤／去波動變體（BACKTEST_LOG #28：它們在絕對門檻下的高報酬來自門檻效應）。
+# 代號中間有空號是刻意的 —— 沿用原編號，才對得上 BACKTEST_LOG 裡的 ①②③⑥⑧。
 MODEL_KEYS = (
-    "m1_base_up20", "m2_nomkt_up20", "m3_v3_up20", "m4_v3nomkt_up20", "m5_v3nomv_up20",
-    "m6_base_nobear", "m7_nomkt_nobear", "m8_v3_nobear", "m9_v3nomkt_nobear",
-    "m10_v3nomv_nobear",
+    "m1_base_up20", "m2_nomkt_up20", "m3_v3_up20",
+    "m6_base_nobear", "m8_v3_nobear",
 )
 
 # 內部驗證的預設區間＝Round 4 的樣本外全段

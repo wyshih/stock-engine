@@ -84,7 +84,7 @@ def cached_scores(model_key: str, date_str: str) -> pd.DataFrame:
     features 在函式內載入（它本身也是快取的），不當參數傳 —— 當參數的話
     st.cache_data 要對 3.4M 列的 DataFrame 算雜湊，比重算還慢。
     """
-    from predict import get_scores_for_date
+    from engine.models.predict import get_scores_for_date
 
     feat = load_parquet("features")
     feat["date"] = pd.to_datetime(feat["date"])
@@ -368,7 +368,7 @@ if page == "今日推薦":
         st.stop()
 
     try:
-        from predict import get_scores_for_date
+        from engine.models.predict import get_scores_for_date
 
         curve = load_sigcurve(model_key)
         # 滑桿範圍依所選模型自動調整：用該模型在驗證期（val_sel）實際出現過的
@@ -956,7 +956,7 @@ elif page == "特徵預覽":
         # price_shape_/volume_shape_ 這 14 欄在 2026-08-05 停止計算（KMeans 群心
         # 用到未來資料），新日期一律 NaN，模型也沒用到。欄位還留在 features.parquet
         # 裡，但沒必要在這裡顯示一整排 nan。前綴定義沿用 train_single，不另外寫死。
-        from train_single import SHAPE_PREFIXES
+        from engine.models.train_single import SHAPE_PREFIXES
         feat_cols = [c for c in feat.columns
                      if c not in ("date", "stock_id") and not c.startswith(SHAPE_PREFIXES)]
 
@@ -1117,7 +1117,7 @@ elif page == "回測結果":
             st.warning("請選擇完整的起訖日期")
             st.stop()
         try:
-            from backtest import simulate, performance
+            from engine.backtest.backtest import simulate, performance
             trail_trigger = (trail_trigger_pct / 100) if use_trailing else None
             trail_pct = (trail_pct_pct / 100) if use_trailing else 0.10
             with st.spinner("回測中..."):
@@ -1154,7 +1154,7 @@ elif page == "回測結果":
 
         # 資產曲線（跟 backtest.py 的 performance() 用同一套等權重投組邏輯，
         # 避免持倉重疊時把交易硬串成一條複利鏈造成報酬率失真）
-        from backtest import _equity_curve
+        from engine.backtest.backtest import _equity_curve
         equity = _equity_curve(trades, price)
         st.subheader("資產曲線（等權重投組，賣出獲利鎖定不再複利）")
         st.line_chart(equity)
@@ -1265,7 +1265,7 @@ elif page == "回測結果":
             st.warning("請至少選一個移動停利觸發門檻、回落幅度、停損均線、機率門檻")
             st.stop()
 
-        from backtest import simulate, performance
+        from engine.backtest.backtest import simulate, performance
         rows = []
         progress = st.progress(0.0, text=f"搜尋中... 0/{len(combos)}")
         for i, (tp, tpct, ma, thr, sd, pat, aa) in enumerate(combos):

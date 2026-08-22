@@ -3,7 +3,7 @@
 存在的理由：這支決定了**什麼東西會被推上 public repo**。推錯就收不回來，
 所以要釘住兩件事：
 
-  1. 期間與模型清單不可以被改壞（10 個模型、2025-02-01 ~ 2026-07-31）
+  1. 期間與模型清單不可以被改壞（5 個模型、2025-02-01 ~ 2026-07-31）
   2. 體積護欄真的會擋 —— 產出一包推不上 GitHub 的東西比失敗還糟
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ from engine.models.bundle import CHOSEN_THRESHOLDS
 
 class TestScope:
     def test_covers_exactly_ten_models(self):
-        assert len(bpb.MODEL_KEYS) == 10
+        assert len(bpb.MODEL_KEYS) == 5
 
     def test_every_model_has_a_chosen_threshold(self):
         """門檻讀 bundle.CHOSEN_THRESHOLDS，不硬編在 export 裡（CLAUDE.md 規則 7）。"""

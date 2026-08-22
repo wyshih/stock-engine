@@ -4,7 +4,7 @@
 public 展示站在隔壁的 `../dashboard/`（獨立 repo，不是 submodule）。
 
 規則與踩坑記錄看 [`CLAUDE.md`](CLAUDE.md)。**最高原則：任何改動都不可以讓
-m1~m10 這 10 個模型變得無法重建。**
+①②③⑥⑧ 這 5 個模型變得無法重建。**
 
 ## 快速開始
 
@@ -12,7 +12,7 @@ m1~m10 這 10 個模型變得無法重建。**
 make install     # venv + 檢查 TA-Lib C 函式庫 + 裝套件
 make bootstrap   # 從 2019-01-01 起全量抓取（10~15 小時，只有第一次）
 make rebuild-full  # 建特徵（含 v3）與 label
-make train       # 序列訓練 m1~m10 + 產門檻曲線（數小時）
+make train       # 序列訓練 5 個模型 + 產門檻曲線（數小時）
 make curve       # 產曲線 → 由人看曲線挑門檻 → 寫進 bundle.py 的 CHOSEN_THRESHOLDS
 make backtest    # 絕對門檻版 + 訊號數對齊版，跑完立刻寫 doc/BACKTEST_LOG.md
 make app         # 本機前端 http://localhost:8501

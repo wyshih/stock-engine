@@ -4,10 +4,10 @@
 public 展示站是隔壁獨立的 `dashboard/` repo（不是 submodule），
 只吃 `make export-public` 產出的資料包。
 
-**最高原則：任何改動都不可以讓 m1~m10 這 10 個模型變得無法重建。**
+**最高原則：任何改動都不可以讓 ①②③⑥⑧ 這 5 個模型變得無法重建。**
 判斷不確定的時候，選「重建得出來」的那條路。
 
-## 10 個模型
+## 5 個模型
 
 全部 RandomForest、Round 4 切分（train 2020-01~2023-11 / val_es 2024H1 /
 val_sel 2024H2 / test 2025-02~2025-12 / test2 2026-01~2026-07），
@@ -18,26 +18,32 @@ val_sel 2024H2 / test 2025-02~2025-12 / test2 2026-01~2026-07），
 | m1_base_up20 | base | 344 | label_up20 | 0.60 |
 | m2_nomkt_up20 | base − `mkt_*`(12) | 332 | label_up20 | 0.60 |
 | m3_v3_up20 | v3 | 509 | label_up20 | 0.60 |
-| m4_v3nomkt_up20 | v3 − `mkt_*` | 497 | label_up20 | 0.60 |
-| m5_v3nomv_up20 | v3 − `mkt_*` − 波動度(16) | 481 | label_up20 | 0.60 |
 | m6_base_nobear | base | 344 | label_nobear | 0.60 |
-| m7_nomkt_nobear | base − `mkt_*` | 332 | label_nobear | 0.60 |
 | m8_v3_nobear | v3 | 509 | label_nobear | 0.58 |
-| m9_v3nomkt_nobear | v3 − `mkt_*` | 497 | label_nobear | 0.57 |
-| m10_v3nomv_nobear | v3 − `mkt_*` − 波動度 | 481 | label_nobear | 0.585 |
+
+**代號中間有空號是刻意的** —— 原本是 5 種特徵集 × 2 種 label = 10 個，
+2026-08-22 使用者選定只留這五個。沿用原編號（①②③⑥⑧）才對得上
+`doc/BACKTEST_LOG.md` 裡的實驗記錄。
+
+砍掉的 m4/m5/m7/m9/m10 全是「去大盤」或「去波動度」變體：BACKTEST_LOG #28
+證實它們在絕對門檻下的高報酬來自**門檻效應而非模型能力**，訊號數對齊後
+m7、m2 是倒數兩名。m2 保留當「去大盤」的對照組。
+連帶不再需要的：sweep round 6/7 兩輪調參、`drop_volatility.txt`
+（檔案留著，之後想復原 m5/m10 還用得到）。
 
 門檻寫在 `engine/models/bundle.py` 的 `CHOSEN_THRESHOLDS`，由使用者看
 val_sel 曲線挑定，不是自動算的。
 
-⚠️ **v3 那六個（m3/m4/m5/m8/m9/m10）重建後特徵數會是 518/506/490，不是表上的
-509/497/481** —— v3 的變體選擇依賴資料相依的 `feature_audit.csv`，換官方資料源
-後必然漂移，不是 bug，也不能靠改程式解決。base 的四個不受影響。
+⚠️ **v3 那兩個（m3/m8）重建後特徵數會是 518，不是表上的 509** —— v3 的變體選擇
+依賴資料相依的 `feature_audit.csv`，換官方資料源後必然漂移，不是 bug，也不能
+靠改程式解決。base 與 nomkt 的三個（344/332）不受影響。
 詳見 `doc/EXPERIMENT_STATUS.md`。
 
 ⚠️ **`engine/models/config/` 底下兩個檔是版控產物，不可刪**：
-`drop_volatility.txt`（m5/m10 要）與 `sweep_round4_rf.csv`（m1/m2/m6/m7 要）。
+`sweep_round4_rf.csv`（m1/m2/m6 的組態來源）。同層的 `drop_volatility.txt`
+目前沒有模型在用（m5/m10 已砍），保留是為了之後想復原那兩個時不必重挑。
 它們跟 `CHOSEN_THRESHOLDS` 一樣是人挑出來的、程式推導不出來。放在 `data/` 就會
-被 .gitignore 擋掉，clone 下來直接重建不出六個模型（2026-08-22 驗收時抓到）。
+被 .gitignore 擋掉，clone 下來直接重建不出模型（2026-08-22 驗收時抓到）。
 
 重建路徑：`make bootstrap` → `make rebuild-full` → `make train` → `make curve`
 （人挑門檻）→ `make backtest` → 寫 `doc/BACKTEST_LOG.md`。

@@ -1,12 +1,12 @@
 """從 sweep CSV 讀出某個模型家族的最佳超參數組。
 
 為什麼是新檔（2026-08-22 搬進本 repo 時新寫）：
-`train_label_variant.py`（訓練 m1~m10 的唯一入口）需要 `best_config()`，
+`train_label_variant.py`（訓練 5 個模型的唯一入口）需要 `best_config()`，
 而這個函式原本住在 `code/models/finalists.py` 裡。`finalists.py` 整支只服務
 已封存的 r1/r2/r4 委員會流程，不搬；但它裡面的 `best_config()` / `_coerce()`
-是 m1~m10 訓練路徑的必要相依。舊 repo 的 `pipeline/03_models/` 漏了這支，
+是訓練路徑的必要相依。舊 repo 的 `pipeline/03_models/` 漏了這支，
 所以 `pipeline/train_all.sh` 其實跑不起來（ModuleNotFoundError: finalists）。
-這裡把這兩個函式原封搬出來，讓 10 個模型真的可以重建。
+這裡把這兩個函式原封搬出來，讓那幾個模型真的可以重建。
 
 ⚠️ 組態一律**從 sweep CSV 現讀**，不寫死 —— 寫死會拿到某次暫定值。
 """
@@ -45,9 +45,9 @@ def best_config(family: str, config_round: int | None = None) -> dict:
     預設 None＝與當前 round 相同，維持原本行為。
 
     ── 以上為 finalists.py 的原始 docstring，原封保留 ──
-    2026-08-22 搬進本 repo 時補充：m1~m10 也走這條路。m3/m4/m5/m8/m9/m10 用
-    `--config-round 5/6/7`（v3 三組各自重搜，寫在 sweep_round5/6/7_rf.csv）；
-    m1/m2/m6/m7 用 `--config-round 4`，而 round 4 的 CSV 是版控產物，見
+    2026-08-22 搬進本 repo 時補充：m1/m2/m3/m6/m8 也走這條路。m3/m8 用
+    `--config-round 5`（v3 重搜，寫在 sweep_round5_rf.csv）；
+    m1/m2/m6 用 `--config-round 4`，而 round 4 的 CSV 是版控產物，見
     `engine/models/config/README.md`。
     """
     round_no = config_round or current_round()
@@ -56,7 +56,7 @@ def best_config(family: str, config_round: int | None = None) -> dict:
     # 找檔順序：先 data/（重跑 sweep 產生的新結果優先），再退回版控的 config/。
     # round 4 的 CSV 只存在於 config/ —— 它是人工調參的既有成果，沒有任何程式
     # 會在日常流程中重新產生它（要重搜是 `make sweep-base`，約 15 小時）。
-    # 這兩個檔一旦不在版控就會重蹈「scratchpad 產物隨 session 消失、10 個模型
+    # 這兩個檔一旦不在版控就會重蹈「scratchpad 產物隨 session 消失、模型
     # 再也重建不出來」的覆轍，見 config/README.md。
     path = DATA_DIR / name
     if not path.exists():

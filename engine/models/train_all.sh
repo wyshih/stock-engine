@@ -1,5 +1,6 @@
 #!/bin/bash
-# 5 種特徵集 × 2 種 label = 10 個模型，序列訓練（2026-08-16 使用者指定）。
+# 原為 5 種特徵集 × 2 種 label = 10 個模型（2026-08-16 使用者指定）。
+# 2026-08-22 使用者選定只留 ①②③⑥⑧ 五個，特徵集剩 base / nomkt / v3。
 #
 # 特徵集：
 #   base      data/features.parquet      344 欄（原本的）
@@ -44,13 +45,12 @@ prep() {
     # 這兩個是人工挑定、程式推導不出來的產物（見 engine/models/config/README.md）。
     # 缺任何一個，m5/m10（波動度清單）或 m1/m2/m6/m7（round 4 組態）就訓不出來，
     # 而且會在跑了幾小時之後才炸 —— 所以在這裡先擋。
-    for f in "$VOLFILE" "$SWEEP4"; do
+    for f in "$SWEEP4"; do
         if [ ! -f "$f" ]; then
             fail "缺少版控組態檔 $f —— 這是人工挑定的產物，不是 data/ 的衍生檔，
       應該跟著 repo 一起來。請確認沒有被誤刪，說明見 engine/models/config/README.md"
         fi
     done
-    echo "  ✓ $VOLFILE"
     echo "  ✓ $SWEEP4"
 
     step "前處理：稽核檔"
@@ -105,12 +105,15 @@ train() {
     fi
 }
 
-echo "10 個模型序列訓練開始 $(date '+%F %T')　PID=$$"
+echo "5 個模型序列訓練開始 $(date '+%F %T')　PID=$$"
 
 prep
 
 
-# ── 階段一：v3 三種特徵集各自調參（每組 8 個組態，n_estimators=150）────────
+# ── 階段一：v3 調參（8 個組態，n_estimators=150）──────────────────────────
+# 原本 sweep 5/6/7 三輪（v3 / v3去大盤 / v3去大盤去波動）。2026-08-22 使用者
+# 選定只留 ①②③⑥⑧，v3nomkt 與 v3nomv 沒有模型在用，那兩輪就不必跑。
+# 要復原：把 sweep 6/7 與 m4/m5/m9/m10 那幾行加回來（git 歷史裡有）。
 sweep() {   # $1=round $2=名稱 $3...=剔除參數
     local rnd=$1 name=$2; shift 2
     step "調參 round${rnd}  ${name}"
@@ -122,31 +125,24 @@ sweep() {   # $1=round $2=名稱 $3...=剔除參數
             --features "$FEAT_V3" "$@" || fail "sweep round${rnd}"
     fi
 }
-sweep 5 "v3"            
-sweep 6 "v3去大盤"       --drop-prefix mkt_
-sweep 7 "v3去大盤去波動"  --drop-prefix mkt_ --drop-file "$VOLFILE"
+sweep 5 "v3"
 
-# ── 階段二：10 個模型 ────────────────────────────────────────────────────
+# ── 階段二：5 個模型 ─────────────────────────────────────────────────────
+# 使用者 2026-08-22 從十個裡選定這五個（依 BACKTEST_LOG #28 的訊號數對齊口徑，
+# ⑥① 是第 1、2 名，③⑧ 第 3、4 名；②雖然對齊後墊底，保留當「去大盤」的對照）。
+# 砍掉的 ④⑤⑦⑨⑩ 全是去大盤／去波動變體 —— #28 已證實它們在絕對門檻下的高報酬
+# 來自門檻效應而非模型能力。
+
 # ── label = label_up20（原本的）──────────────────────────────────────────
 train m1_base_up20    "$FEAT_BASE" data/labels.parquet label_up20 "①原特徵·上漲天數"
 train m2_nomkt_up20   "$FEAT_BASE" data/labels.parquet label_up20 "②去大盤·上漲天數" \
       --drop-prefix mkt_
 train m3_v3_up20      "$FEAT_V3"   data/labels.parquet label_up20 "③v3·上漲天數" --cfg 5
-train m4_v3nomkt_up20 "$FEAT_V3"   data/labels.parquet label_up20 "④v3去大盤·上漲天數" --cfg 6 \
-      --drop-prefix mkt_
-train m5_v3nomv_up20  "$FEAT_V3"   data/labels.parquet label_up20 "⑤v3去大盤去波動·上漲天數" --cfg 7 \
-      --drop-prefix mkt_ --drop-file "$VOLFILE"
 
 # ── label = label_nobear（排除空頭排列）──────────────────────────────────
 train m6_base_nobear    "$FEAT_BASE" data/labels_nobear.parquet label_nobear "⑥原特徵·去空頭"
-train m7_nomkt_nobear   "$FEAT_BASE" data/labels_nobear.parquet label_nobear "⑦去大盤·去空頭" \
-      --drop-prefix mkt_
 train m8_v3_nobear      "$FEAT_V3"   data/labels_nobear.parquet label_nobear "⑧v3·去空頭" --cfg 5
-train m9_v3nomkt_nobear "$FEAT_V3"   data/labels_nobear.parquet label_nobear "⑨v3去大盤·去空頭" --cfg 6 \
-      --drop-prefix mkt_
-train m10_v3nomv_nobear "$FEAT_V3"   data/labels_nobear.parquet label_nobear "⑩v3去大盤去波動·去空頭" --cfg 7 \
-      --drop-prefix mkt_ --drop-file "$VOLFILE"
 
 echo ""
-echo "======== [$(date '+%F %T')] 10 個模型全部完成 ========"
+echo "======== [$(date '+%F %T')] 5 個模型全部完成 ========"
 ls -1 models/bundle_m*.pkl | sed 's|models/bundle_||;s|\.pkl||' | sed 's/^/  /'

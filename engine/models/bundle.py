@@ -1,7 +1,7 @@
 """訓練好的模型 bundle：存檔格式、載入、以及對「某一天」做推論。
 
 前端（streamlit）與 `predict.py` 共用這一支。可用的模型＝`models/` 底下所有
-`bundle_*.pkl`，現行是 m1~m10（5 種特徵集 × 2 種 label，全部 Round 4 切分）。
+`bundle_*.pkl`，現行是 ①②③⑥⑧ 五個（base/nomkt/v3 三種特徵集 × 兩種 label，Round 4 切分）。
 
 2026-08-14：MLP / LSTM / 兩種集成全部移除，只保留 RF。集成必須同輪三個單模都在
 才算得出來，單模一移除就不可能存在，因此一併拿掉。要復原得重寫 torch 推論路徑
@@ -121,12 +121,15 @@ def score_for_date(key: str, feat: pd.DataFrame, date: pd.Timestamp) -> pd.DataF
 # 沒挑過的代號 → `default_threshold()` 退回「訊號率 1%」那一點。
 # 2026-08-15 使用者從 Round 4 各模型的 val_sel 曲線挑定下列五組。
 CHOSEN_THRESHOLDS = {
-    # 2026-08-16 使用者從 val_sel 曲線挑定的 10 個模型門檻
-    "m1_base_up20": 0.60,      "m2_nomkt_up20": 0.60,
-    "m3_v3_up20": 0.60,        "m4_v3nomkt_up20": 0.60,
-    "m5_v3nomv_up20": 0.60,    "m6_base_nobear": 0.60,
-    "m7_nomkt_nobear": 0.60,   "m8_v3_nobear": 0.58,
-    "m9_v3nomkt_nobear": 0.57, "m10_v3nomv_nobear": 0.585,
+    # 2026-08-16 使用者從 val_sel 曲線挑定。
+    # 2026-08-22 模型從十個縮到五個（①②③⑥⑧），砍掉的四個門檻一併移除。
+    # ⚠️ 這幾個值是**舊模型**的門檻。在官方資料源上重訓之後分數分布會不一樣，
+    #    必須重跑 `make curve` 由人重新挑（CLAUDE.md 規則 7）。
+    "m1_base_up20": 0.60,
+    "m2_nomkt_up20": 0.60,
+    "m3_v3_up20": 0.60,
+    "m6_base_nobear": 0.60,
+    "m8_v3_nobear": 0.58,
 }
 FALLBACK_SIGNAL_RATE = 0.01
 

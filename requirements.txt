@@ -19,6 +19,10 @@ exchange-calendars==4.5.6
 # ML / 模型
 scikit-learn==1.5.2
 lightgbm==4.5.0
+# 超參數搜尋（sweep_round1.py）。舊 repo 的 requirements 漏了這個 —— 它只裝在
+# 當時那個 venv 裡，從乾淨環境重建會在 `make train` 的調參階段才炸（2026-08-22
+# 用相依掃描抓到）。
+optuna==4.9.0
 # PyTorch（DL 可選，平台相關，請依官網安裝）
 # https://pytorch.org/get-started/locally/
 
@@ -27,6 +31,8 @@ python-dotenv==1.0.1
 
 # 介面
 streamlit==1.39.0
+# 技術面分析頁的 K 線圖（frontend/technical_chart.py）。同樣是舊 repo 漏列的。
+plotly==6.9.0
 matplotlib==3.9.2
 seaborn==0.13.2
 

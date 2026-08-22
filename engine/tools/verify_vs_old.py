@@ -193,7 +193,7 @@ BASELINE_FEATURE_COUNTS = {
 
 
 def check_model_feature_counts(report: Report, old_data: Path) -> None:
-    """重建後，10 個模型實際會拿到幾個特徵？跟封存 bundle 的基準對照。
+    """重建後，各模型實際會拿到幾個特徵？跟封存 bundle 的基準對照。
 
     ⚠️ **v3 三組對不上是預期的，不是 bug。** v3 的 sz/raw 變體選擇依賴
     `data/feature_audit.csv`，那份稽核檔是**資料相依**的（用當時的全市場資料算
@@ -212,8 +212,10 @@ def check_model_feature_counts(report: Report, old_data: Path) -> None:
     vol_file = Path(__file__).resolve().parents[1] / "models" / "config" / "drop_volatility.txt"
     dropped_vol = set(vol_file.read_text().split()) if vol_file.exists() else set()
 
+    # 只檢查現行五個模型用得到的三組。v3nomkt / v3nomv 隨 m4/m5/m9/m10 一起砍了，
+    # 基準值留在 BASELINE_FEATURE_COUNTS 供日後復原時對照。
     for parquet, groups in (("features", ("base", "nomkt")),
-                            ("features_v3", ("v3", "v3nomkt", "v3nomv"))):
+                            ("features_v3", ("v3",))):
         path = DATA_DIR / f"{parquet}.parquet"
         if not path.exists():
             for g in groups:

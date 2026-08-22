@@ -67,7 +67,16 @@ def main() -> None:
     # `make update` 時「今天」根本還沒有資料，拿今天去驗一定失敗，整條流程會斷
     want_last = "--last" in sys.argv
 
-    dates = trading_dates()
+    # --file NAME：改看別的資料檔（預設 price）。bootstrap 途中需要這個 ——
+    # 那時 price.parquet 還不存在（promote 是最後一步），只有
+    # price_official.parquet / chip.parquet 這些原始檔有進度。沒有它的話，
+    # 斷線續跑會退回 FALLBACK_START、從 2019 年重抓一遍（2026-08-22 踩到：
+    # 一次 DNS 瞬斷讓 1,994 天的爬取整個作廢）。
+    name = "price"
+    if "--file" in sys.argv:
+        name = sys.argv[sys.argv.index("--file") + 1]
+
+    dates = trading_dates(name)
     if dates is None:
         print(FALLBACK_START)
         return

@@ -19,8 +19,7 @@ APP_LOG ?= $(HOME)/Library/Logs/stock_app.log
 # 區域網路 IP（macOS 先問 Wi-Fi 再問有線；取不到就退回 hostname）
 LAN_IP  := $(shell ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $$1}')
 
-MODELS := m1_base_up20 m2_nomkt_up20 m3_v3_up20 m4_v3nomkt_up20 m5_v3nomv_up20 \
-          m6_base_nobear m7_nomkt_nobear m8_v3_nobear m9_v3nomkt_nobear m10_v3nomv_nobear
+MODELS := m1_base_up20 m2_nomkt_up20 m3_v3_up20 m6_base_nobear m8_v3_nobear
 
 .PHONY: help install bootstrap update data promote revenue validate features features-v3 \
         labels scores train curve backtest app app-bg stop restart logs \
@@ -33,10 +32,10 @@ help:  ## 列出指令
 	@echo "    make app            啟動前端  http://localhost:$(PORT)"
 	@echo "    make status         看各資料檔的最新日期與斷層"
 	@echo ""
-	@echo "  重建 m1~m10（最高原則：這條路徑必須永遠走得通）"
+	@echo "  重建這 5 個模型（最高原則：這條路徑必須永遠走得通）"
 	@echo "    make bootstrap      從 $(BOOTSTRAP_FROM) 起全量抓取（10~15 小時）"
 	@echo "    make rebuild-full   先刪衍生檔再全量重建特徵與 label"
-	@echo "    make train          序列訓練 10 個模型 + 產門檻曲線（數小時）"
+	@echo "    make train          序列訓練 5 個模型 + 產門檻曲線（數小時）"
 	@echo "    make curve          只產門檻曲線（由人看曲線挑門檻）"
 	@echo "    make backtest       用挑定門檻回測，附訊號數對齊版"
 	@echo ""
@@ -50,8 +49,12 @@ help:  ## 列出指令
 install:  ## 建立 venv、檢查 TA-Lib C 函式庫、安裝套件
 	@# TA-Lib 的 Python wheel 需要先有 C 二進位，缺了會在 pip install 階段才爆，
 	@# 訊息又完全看不出是缺 C library。先擋在這裡。
-	@if ! (pkg-config --exists ta-lib 2>/dev/null || ls /opt/homebrew/lib/libta*.dylib \
-	        /usr/local/lib/libta*.dylib /usr/lib64/libta*.so >/dev/null 2>&1); then \
+	@# 每個路徑分開檢查：`ls a b c` 只要其中一個不存在就回非零，而 /usr/local/lib
+	@# 與 /usr/lib64 在 Apple Silicon 上本來就沒有 —— 合在一起寫會誤報找不到。
+	@if ! (pkg-config --exists ta-lib 2>/dev/null \
+	       || ls /opt/homebrew/lib/libta*.dylib >/dev/null 2>&1 \
+	       || ls /usr/local/lib/libta*.dylib >/dev/null 2>&1 \
+	       || ls /usr/lib64/libta*.so >/dev/null 2>&1); then \
 	  echo ""; \
 	  echo "  ❌ 找不到 TA-Lib 的 C 函式庫。先裝它再回來："; \
 	  echo "       macOS         brew install ta-lib libomp"; \
@@ -60,7 +63,20 @@ install:  ## 建立 venv、檢查 TA-Lib C 函式庫、安裝套件
 	  echo ""; \
 	  exit 1; \
 	fi
-	@test -d .venv || python3 -m venv .venv
+	@# 用 3.12：macOS 的系統 python3 是 3.9.6，建在上面不會馬上爆，是等到跑起來
+	@# 才出現難查的問題。上限也不能太新 —— requirements 鎖的 numpy 1.26.4 沒有
+	@# 3.13+ 的 wheel，硬升 numpy 會連帶升 scikit-learn，RF 的訓練結果就跟舊模型
+	@# 不可比了。3.12 是「夠新且所有套件版本都不用動」的那一格。
+	@if [ ! -d .venv ]; then \
+	  PYBIN=$$(command -v python3.12 || command -v python3.11 || command -v python3); \
+	  ver=$$($$PYBIN -c 'import sys;print("%d%02d"%sys.version_info[:2])'); \
+	  if [ "$$ver" -lt 311 ]; then \
+	    echo ""; echo "  ❌ 需要 Python 3.11 以上，找到的是 $$($$PYBIN -V)"; \
+	    echo "       macOS  brew install python@3.12"; echo ""; exit 1; \
+	  fi; \
+	  echo "  用 $$PYBIN（$$($$PYBIN -V)）建立 venv"; \
+	  $$PYBIN -m venv .venv; \
+	fi
 	$(PY) -m pip install --upgrade pip
 	$(PY) -m pip install -r requirements.txt
 	@# fetch_stock_list 是 bootstrap/update 的第一步且會 load_dotenv()，
@@ -127,7 +143,7 @@ labels:  ## 算 label（labels.parquet / labels_nobear.parquet）
 	$(PY) -m engine.models.build_labels
 	$(PY) -m engine.models.build_labels_nobear
 
-scores:  ## 對新日期補算 10 個模型的分數（前端歷史曲線用）
+scores:  ## 對新日期補算 5 個模型的分數（前端歷史曲線用）
 	$(PY) -m engine.models.score_recent
 
 # ── 日常更新 ────────────────────────────────────────────────────────────
@@ -138,13 +154,17 @@ update: data revenue promote validate features labels scores  ## 日常增量更
 
 # ── 全量重建 ────────────────────────────────────────────────────────────
 bootstrap:  ## 從 $(BOOTSTRAP_FROM) 起全量抓取（10~15 小時）
+	@# 逐交易日打官方端點跑 3.5 小時以上，中途遇到網路瞬斷是常態。各 fetcher 的
+	@# 重試只有 3 次（約 15 秒），撐不過去 —— 所以長爬取一律走 backfill.sh，
+	@# 它會從資料檔的最後一天接著跑（upsert，重疊無害）。
+	@# 2026-08-22 踩過：第 33/1994 天 tpex DNS 瞬斷，整條 bootstrap 作廢。
 	$(PY) -m engine.data_source.fetch_stock_list
-	$(PY) -m engine.data_source.fetch_price_official --start $(BOOTSTRAP_FROM) --end $(TODAY)
+	engine/data_source/backfill.sh engine.data_source.fetch_price_official $(BOOTSTRAP_FROM) $(TODAY)
 	$(PY) -m engine.data_source.fetch_price_official --start $(BOOTSTRAP_FROM) --end $(TODAY) --market index
 	$(PY) -m engine.data_source.fetch_exright   --first-year $(shell echo $(BOOTSTRAP_FROM) | cut -d- -f1)
-	$(PY) -m engine.data_source.fetch_chip      --start $(BOOTSTRAP_FROM) --end $(TODAY)
-	$(PY) -m engine.data_source.fetch_chip_tpex --start $(BOOTSTRAP_FROM) --end $(TODAY)
-	$(PY) -m engine.data_source.fetch_fundamental --start $(BOOTSTRAP_FROM) --end $(TODAY)
+	engine/data_source/backfill.sh engine.data_source.fetch_chip        $(BOOTSTRAP_FROM) $(TODAY)
+	engine/data_source/backfill.sh engine.data_source.fetch_chip_tpex   $(BOOTSTRAP_FROM) $(TODAY)
+	engine/data_source/backfill.sh engine.data_source.fetch_fundamental $(BOOTSTRAP_FROM) $(TODAY)
 	$(PY) -m engine.data_source.fetch_revenue --bulk-start $(shell echo $(BOOTSTRAP_FROM) | cut -c1-7) --bulk-end $(REV_TO)
 	@$(MAKE) promote
 	@$(MAKE) validate
@@ -167,7 +187,7 @@ rebuild-full: clean-derived features features-v3 labels  ## 先刪衍生檔再�
 
 # ── 訓練 ────────────────────────────────────────────────────────────────
 # 一次一個，不並行 —— 10 核機器，RF 內層已吃 6 核，並行只會更慢（CLAUDE.md 規則 10）。
-train:  ## 序列訓練 m1~m10（含調參與門檻曲線，數小時）
+train:  ## 序列訓練 5 個模型（含 v3 調參與門檻曲線，數小時）
 	./engine/models/train_all.sh
 
 # 平常不用跑。m1/m2/m6/m7 的組態來自版控的 engine/models/config/sweep_round4_rf.csv
@@ -194,7 +214,7 @@ curve:  ## 產生 val_sel 門檻曲線（訓練後由人看曲線挑門檻）
 # 只比固定門檻會退化成比門檻鬆緊（BACKTEST_LOG #28、CLAUDE.md 規則 9）。
 # 區間預設 test + test2（Round 4 樣本外全段），不跟 public 展示窗口綁在一起。
 # 要縮區間：make backtest ARGS="--start 2026-01-01"
-backtest:  ## 用挑定門檻回測 10 個模型（絕對門檻 + 訊號數對齊）
+backtest:  ## 用挑定門檻回測 5 個模型（絕對門檻 + 訊號數對齊）
 	@mkdir -p data/backtest
 	$(PY) -m engine.backtest.summary --out data/backtest $(ARGS)
 	@column -s, -t data/backtest/backtest_summary.csv
