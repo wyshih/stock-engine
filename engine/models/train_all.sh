@@ -31,7 +31,8 @@ cd "$(dirname "$0")/../.." || exit 1   # repo 根目錄（engine/）
 PY=".venv/bin/python"
 FEAT_BASE=data/features.parquet
 FEAT_V3=data/features_v3.parquet
-VOLFILE=data/drop_volatility.txt
+VOLFILE=engine/models/config/drop_volatility.txt
+SWEEP4=engine/models/config/sweep_round4_rf.csv
 AUDIT=data/feature_audit.csv
 VOLPROXY=data/volproxy.csv
 
@@ -39,6 +40,19 @@ VOLPROXY=data/volproxy.csv
 # 這三樣原本是在 scratchpad 臨時算的，session 一結束就沒了，導致這十個模型
 # 在換掉資料源之後**完全無法重建**。現在全部有對應的程式，整條流程可重現。
 prep() {
+    step "前處理：版控組態檔"
+    # 這兩個是人工挑定、程式推導不出來的產物（見 engine/models/config/README.md）。
+    # 缺任何一個，m5/m10（波動度清單）或 m1/m2/m6/m7（round 4 組態）就訓不出來，
+    # 而且會在跑了幾小時之後才炸 —— 所以在這裡先擋。
+    for f in "$VOLFILE" "$SWEEP4"; do
+        if [ ! -f "$f" ]; then
+            fail "缺少版控組態檔 $f —— 這是人工挑定的產物，不是 data/ 的衍生檔，
+      應該跟著 repo 一起來。請確認沒有被誤刪，說明見 engine/models/config/README.md"
+        fi
+    done
+    echo "  ✓ $VOLFILE"
+    echo "  ✓ $SWEEP4"
+
     step "前處理：稽核檔"
     if [ -f "$AUDIT" ] && [ -f "$VOLPROXY" ]; then
         echo "  ⏭  已存在，跳過"

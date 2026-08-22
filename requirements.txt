@@ -11,9 +11,9 @@ scipy==1.13.1
 TA-Lib==0.6.8
 
 # 資料來源
-yfinance==1.4.1
 requests==2.32.3
-FinMind==2.0.4
+# FinMind 套件本身沒用到 —— fetch_stock_list 是直接打 FinMind 的 REST
+# 端點（requests），只需要 FINMIND_TOKEN 環境變數，見 .env.example
 exchange-calendars==4.5.6
 
 # ML / 模型

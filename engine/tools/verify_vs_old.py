@@ -51,7 +51,7 @@ MERGED_FEATURES = {"features": 380, "features_v3": 520}
 LABEL_FILES = {"labels": 3_327_632, "labels_nobear": 2_060_418}
 MODEL_KEYS = tuple(CHOSEN_THRESHOLDS)
 
-OK, FAIL, SKIP = "✅", "❌", "⏭ "
+OK, FAIL, SKIP, NOTE = "✅", "❌", "⏭ ", "📌"
 
 
 class Report:
@@ -72,6 +72,10 @@ class Report:
 
     def skip(self, name: str, detail: str) -> None:
         self.add(SKIP, name, detail)
+
+    def note(self, name: str, detail: str) -> None:
+        """有差異但不判失敗 —— 已知且已解釋的漂移，要讓人看見但不擋流程。"""
+        self.add(NOTE, name, detail)
 
     @property
     def failures(self) -> list[tuple[str, str, str]]:
@@ -180,6 +184,59 @@ def check_features(report: Report, old_data: Path) -> None:
                   + (f"，{n_bad_total} 欄不符" if n_bad_total else ""))
 
 
+# 封存 bundle 實際使用的特徵數（從 models/_pre_official_backup/bundle_*.pkl 的
+# `cols` 讀出來的，不是推算）。base 兩組換資料源後仍然對得上；v3 三組對不上，
+# 原因見下方 check_model_feature_counts 的說明。
+BASELINE_FEATURE_COUNTS = {
+    "base": 344, "nomkt": 332, "v3": 509, "v3nomkt": 497, "v3nomv": 481,
+}
+
+
+def check_model_feature_counts(report: Report, old_data: Path) -> None:
+    """重建後，10 個模型實際會拿到幾個特徵？跟封存 bundle 的基準對照。
+
+    ⚠️ **v3 三組對不上是預期的，不是 bug。** v3 的 sz/raw 變體選擇依賴
+    `data/feature_audit.csv`，那份稽核檔是**資料相依**的（用當時的全市場資料算
+    Spearman 相關），換成官方資料源後有 8 個特徵的分類翻轉、另外多出 `_log_xs`
+    欄，選出來會是 518/506/490 而不是 509/497/481。
+
+    `spec.py` / `transforms.py` 與舊 repo byte-identical，程式沒被改動 —— 這是
+    資料源變更的必然結果。意思是 m3/m4/m5/m8/m9/m10 **無法逐欄重現**封存的模型，
+    只能重新訓練出「同一套方法、新資料下的版本」。base 的 m1/m2/m6/m7 不受影響。
+
+    這一項刻意**不**判 FAIL：印出來讓人看見差異，避免有人以為重建成功了。
+    """
+    print("\n模型特徵數（對照封存 bundle）")
+    from engine.models.submodel_config import feature_cols
+
+    vol_file = Path(__file__).resolve().parents[1] / "models" / "config" / "drop_volatility.txt"
+    dropped_vol = set(vol_file.read_text().split()) if vol_file.exists() else set()
+
+    for parquet, groups in (("features", ("base", "nomkt")),
+                            ("features_v3", ("v3", "v3nomkt", "v3nomv"))):
+        path = DATA_DIR / f"{parquet}.parquet"
+        if not path.exists():
+            for g in groups:
+                report.skip(f"特徵數 {g}", f"{parquet}.parquet 不存在")
+            continue
+        all_cols = [c for c in pq.read_schema(path).names if c not in KEYS]
+        selected = feature_cols("UP20", all_cols)
+        for group in groups:
+            cols = list(selected)
+            if group != "base" and group != "v3":
+                cols = [c for c in cols if not c.startswith("mkt_")]
+            if group == "v3nomv":
+                cols = [c for c in cols if c not in dropped_vol]
+            n, base = len(cols), BASELINE_FEATURE_COUNTS[group]
+            if n == base:
+                report.ok(f"特徵數 {group}", f"{n}（與封存 bundle 相同）")
+            else:
+                report.note(f"特徵數 {group}",
+                            f"{n}，封存 bundle 是 {base}（差 {n - base:+d}）"
+                            + ("　← v3 系列資料相依，預期會漂移，見 doc/EXPERIMENT_STATUS.md"
+                               if group.startswith("v3") else "　← ⚠️ base 系列不該漂移，要查"))
+
+
 def check_labels(report: Report, old_data: Path) -> None:
     print("\nlabel")
     for name, expect_rows in LABEL_FILES.items():
@@ -260,7 +317,8 @@ def check_models(report: Report, old_repo: Path) -> None:
         (report.fail if problems else report.ok)(key, "；".join(problems) or "　".join(aucs))
 
 
-CHECKS = {"raw": check_raw, "features": check_features, "labels": check_labels}
+CHECKS = {"raw": check_raw, "features": check_features,
+          "featcount": check_model_feature_counts, "labels": check_labels}
 
 
 def main() -> None:
@@ -294,7 +352,9 @@ def main() -> None:
         for _, name, detail in report.failures:
             print(f"    {name}: {detail}")
     else:
-        print(f"{OK} 全部相符（跳過 {sum(1 for r in report.rows if r[0] == SKIP)} 項）")
+        notes = sum(1 for r in report.rows if r[0] == NOTE)
+        print(f"{OK} 全部相符（跳過 {sum(1 for r in report.rows if r[0] == SKIP)} 項）"
+              + (f"，另有 {notes} 項已知差異標 {NOTE}，請看上面的說明" if notes else ""))
     print("=" * 72)
 
     if args.json:

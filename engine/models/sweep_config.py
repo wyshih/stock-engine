@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,9 @@ from engine.paths import DATA_DIR
 from engine.models.train_single import current_round, eval_splits
 
 logger = logging.getLogger(__name__)
+
+# 版控的調參產物（人工挑定、程式推導不出來），見 config/README.md
+CONFIG_DIR = Path(__file__).resolve().parent / "config"
 
 # metrics 與計時欄位不是超參數，讀組態時要濾掉
 NON_PARAM_COLS = {"model", "seconds", "epochs"}
@@ -35,16 +39,35 @@ def best_config(family: str, config_round: int | None = None) -> dict:
     跨模型排名一律看 val_sel，不看 val_es —— 神經網路拿 val_es 做 early
     stopping，會偷看幾百次，分數虛高（doc/PLAN.md §4）。
 
-    `config_round` 可與當前切分不同，例如「Round 4 的切分 + Round 5 選出的組態」
-    （v3 特徵集三組各自重搜，寫在 sweep_round5/6/7_rf.csv）。
-    預設 None＝與當前 round 相同。
+    `config_round` 可與當前切分不同，例如「Round 1 的切分 + Round 2 選出的組態」。
+    這是必要的：`sweep_round1_*.csv` 是在特徵重建**之前**跑的（含 revenue_year
+    等已清除的欄位），選出的組態被污染，不該再拿來訓練。
+    預設 None＝與當前 round 相同，維持原本行為。
+
+    ── 以上為 finalists.py 的原始 docstring，原封保留 ──
+    2026-08-22 搬進本 repo 時補充：m1~m10 也走這條路。m3/m4/m5/m8/m9/m10 用
+    `--config-round 5/6/7`（v3 三組各自重搜，寫在 sweep_round5/6/7_rf.csv）；
+    m1/m2/m6/m7 用 `--config-round 4`，而 round 4 的 CSV 是版控產物，見
+    `engine/models/config/README.md`。
     """
     round_no = config_round or current_round()
-    path = DATA_DIR / f"sweep_round{round_no}_{family}.csv"
+    name = f"sweep_round{round_no}_{family}.csv"
+
+    # 找檔順序：先 data/（重跑 sweep 產生的新結果優先），再退回版控的 config/。
+    # round 4 的 CSV 只存在於 config/ —— 它是人工調參的既有成果，沒有任何程式
+    # 會在日常流程中重新產生它（要重搜是 `make sweep-base`，約 15 小時）。
+    # 這兩個檔一旦不在版控就會重蹈「scratchpad 產物隨 session 消失、10 個模型
+    # 再也重建不出來」的覆轍，見 config/README.md。
+    path = DATA_DIR / name
+    if not path.exists():
+        path = CONFIG_DIR / name
     if not path.exists():
         raise FileNotFoundError(
-            f"找不到 {path}，請先跑 sweep_round1.py --model {family} --round {round_no}"
+            f"找不到 {name}（已找過 {DATA_DIR} 與 {CONFIG_DIR}）。\n"
+            f"round 5/6/7 由 `make train` 的階段一自動產生；"
+            f"round 4 是版控產物，應在 {CONFIG_DIR}，請確認沒有被誤刪。"
         )
+    logger.info(f"{family}：組態讀自 {path}")
 
     df = pd.read_csv(path)
     row = df.sort_values("val_sel_auc", ascending=False).iloc[0]

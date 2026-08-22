@@ -29,14 +29,18 @@ from engine.models.train_single import apply_stats
 
 
 def model_label(key: str) -> str:
-    """下拉選單顯示的名稱。從 bundle 的 metadata 取，取不到就用代號。"""
+    """下拉選單顯示的名稱。從 bundle 的 metadata 取，取不到就用代號。
+
+    舊版會在名稱前掛 🧪 表示「非內建的實驗模型」。內建／實驗的區分已經隨
+    r1/r2/r4 那組死代號一起移除 —— 現在 m1~m10 就是正式模型，全部掛 🧪 反而
+    誤導。真正的實驗模型（自己丟進 models/ 的）靠 desc 自己說明。
+    """
     try:
         with open(key_bundle_path(key), "rb") as f:
             meta = pickle.load(f)
-        desc = meta.get("desc") or meta.get("label_name") or "實驗"
-        return f"🧪 {desc}"
+        return meta.get("desc") or meta.get("label_name") or key
     except Exception:
-        return f"🧪 {key}"
+        return key
 
 
 def key_bundle_path(key: str) -> Path:

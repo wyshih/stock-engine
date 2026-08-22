@@ -87,7 +87,10 @@ def promote(official: pd.DataFrame, keep: set[str]) -> pd.DataFrame:
     out = official[official["stock_id"].astype(str).isin(keep)].copy()
     out = out.drop(columns=[c for c in DROP_COLUMNS if c in out.columns])
     out = out[OUTPUT_COLUMNS]
-    out["date"] = pd.to_datetime(out["date"])
+    # 統一成 ns：price_official.parquet 是 datetime64[us]，舊 price.parquet 是
+    # datetime64[ns]。數值一樣，但 parquet schema 不同，下游用 columns= 讀取或
+    # 跟其他檔 merge 時會踩到型別不一致。
+    out["date"] = pd.to_datetime(out["date"]).astype("datetime64[ns]")
     out = out.sort_values(["date", "stock_id"]).reset_index(drop=True)
     return out
 

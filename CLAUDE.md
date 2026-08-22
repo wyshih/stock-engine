@@ -29,6 +29,16 @@ val_sel 2024H2 / test 2025-02~2025-12 / test2 2026-01~2026-07），
 門檻寫在 `engine/models/bundle.py` 的 `CHOSEN_THRESHOLDS`，由使用者看
 val_sel 曲線挑定，不是自動算的。
 
+⚠️ **v3 那六個（m3/m4/m5/m8/m9/m10）重建後特徵數會是 518/506/490，不是表上的
+509/497/481** —— v3 的變體選擇依賴資料相依的 `feature_audit.csv`，換官方資料源
+後必然漂移，不是 bug，也不能靠改程式解決。base 的四個不受影響。
+詳見 `doc/EXPERIMENT_STATUS.md`。
+
+⚠️ **`engine/models/config/` 底下兩個檔是版控產物，不可刪**：
+`drop_volatility.txt`（m5/m10 要）與 `sweep_round4_rf.csv`（m1/m2/m6/m7 要）。
+它們跟 `CHOSEN_THRESHOLDS` 一樣是人挑出來的、程式推導不出來。放在 `data/` 就會
+被 .gitignore 擋掉，clone 下來直接重建不出六個模型（2026-08-22 驗收時抓到）。
+
 重建路徑：`make bootstrap` → `make rebuild-full` → `make train` → `make curve`
 （人挑門檻）→ `make backtest` → 寫 `doc/BACKTEST_LOG.md`。
 
@@ -87,12 +97,20 @@ val_sel 曲線挑定，不是自動算的。
 - 每次比較都附**訊號數對齊版**：每日取分數最高的前 1.5%
 - 跑完立刻寫 `doc/BACKTEST_LOG.md`
 
+實作只有一份：`engine/backtest/summary.py`。`make backtest`（內部驗證，預設
+test + test2 全段）與 `make export-public`（public 展示，固定 2025-02~2026-07）
+都呼叫它，差別只有區間。**不要在匯出流程裡另寫一份回測**。
+
 ## 額外規則
 
 - 所有金融計算必須有 unit test 驗證邊界條件（尤其「未來資料不足時應為 NaN 而非 0」）。
 - 不得 hardcode 任何 API key，一律用環境變數。
 - 資料來源必須記錄在 code comment。
-- `data/`（11GB）與 `models/`（1.6GB）不進 git。
+- `data/`（11GB）與 `models/`（1.6GB）不進 git；例外是 `engine/models/config/`
+  底下的人工調參產物，那是原始碼的一部分。
+- **`make export-public` 之後一定要跑 dashboard 的 pytest**（`make export-public`
+  已經自動接了）。public repo 的安全檢查有幾條在 `public_data/` 是空的時候會
+  skip —— 只有資料包產出後才真的驗得到「沒有 2025-02-01 之前的資料」。
 - Commit 規範：`feat / fix / refactor / test / docs / chore`。
 
 ## 不要搬回來的東西

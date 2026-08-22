@@ -73,6 +73,22 @@ class TestPromote:
         assert list(out.columns) == OUTPUT_COLUMNS
         assert "ex_flag" not in out.columns
 
+    def test_date_is_nanosecond_dtype(self):
+        """price_official 是 datetime64[us]，產出必須統一成舊 price.parquet 的 ns。
+
+        數值一樣但 parquet schema 不同，下游 merge 或 columns= 讀取會踩到。
+        """
+        # Arrange
+        official = _official(["2330"])
+        official["date"] = official["date"].astype("datetime64[us]")
+        keep = allowed_ids(official, _stock_list(["2330"]), prune=False)
+
+        # Act
+        out = promote(official, keep)
+
+        # Assert
+        assert out["date"].dtype == "datetime64[ns]"
+
     def test_is_idempotent(self):
         """跑兩次結果必須完全一樣。"""
         # Arrange

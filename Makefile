@@ -63,6 +63,10 @@ install:  ## 建立 venv、檢查 TA-Lib C 函式庫、安裝套件
 	@test -d .venv || python3 -m venv .venv
 	$(PY) -m pip install --upgrade pip
 	$(PY) -m pip install -r requirements.txt
+	@# fetch_stock_list 是 bootstrap/update 的第一步且會 load_dotenv()，
+	@# 沒有 .env 時 token 會靜默變空字串，清單抓回來是空的、整條流程白跑。
+	@test -f .env || { cp .env.example .env; \
+	  echo ""; echo "  ⚠️ 已從 .env.example 建立 .env —— 請填入 FINMIND_TOKEN 再繼續"; }
 	@echo ""
 	@echo "  完成。接著 make bootstrap（第一次）或 make update（日常）"
 	@echo ""
@@ -166,6 +170,13 @@ rebuild-full: clean-derived features features-v3 labels  ## 先刪衍生檔再�
 train:  ## 序列訓練 m1~m10（含調參與門檻曲線，數小時）
 	./engine/models/train_all.sh
 
+# 平常不用跑。m1/m2/m6/m7 的組態來自版控的 engine/models/config/sweep_round4_rf.csv
+# （2026-08-15 在 344 欄上搜出來的，重訓沿用是刻意的）。只有在你想在**新資料**上
+# 重搜 base 組態時才跑這個 —— 27 組、約 15 小時，跑完寫進 data/，
+# best_config() 會自動優先讀 data/ 的新版本。
+sweep-base:  ## 重搜 base 特徵集的超參數（27 組，約 15 小時，平常不用）
+	$(PY) -m engine.models.sweep_round1 --model rf --round 4 --features data/features.parquet
+
 curve:  ## 產生 val_sel 門檻曲線（訓練後由人看曲線挑門檻）
 	@for k in $(MODELS); do \
 	  echo "=== $$k ==="; \
@@ -181,9 +192,11 @@ curve:  ## 產生 val_sel 門檻曲線（訓練後由人看曲線挑門檻）
 # 回測的唯一路徑。simulate()/performance() + CURRENT_EXIT_RULES + dedup=False，
 # 並且一定附訊號數對齊版（每日前 1.5%）—— 本系統「訊號越少報酬越高」，
 # 只比固定門檻會退化成比門檻鬆緊（BACKTEST_LOG #28、CLAUDE.md 規則 9）。
+# 區間預設 test + test2（Round 4 樣本外全段），不跟 public 展示窗口綁在一起。
+# 要縮區間：make backtest ARGS="--start 2026-01-01"
 backtest:  ## 用挑定門檻回測 10 個模型（絕對門檻 + 訊號數對齊）
 	@mkdir -p data/backtest
-	$(PY) -m engine.export.build_public_bundle --backtest-only --out data/backtest
+	$(PY) -m engine.backtest.summary --out data/backtest $(ARGS)
 	@column -s, -t data/backtest/backtest_summary.csv
 	@echo ""
 	@echo "  ⚠️ 跑完立刻寫 doc/BACKTEST_LOG.md（CLAUDE.md 規則 14）"
@@ -225,8 +238,14 @@ logs:  ## 看前端 log
 	@tail -f $(APP_LOG)
 
 # ── public dashboard ────────────────────────────────────────────────────
-export-public:  ## 產出 public repo 的資料包到 $(DASHBOARD)/public_data
+# 匯出後**一定要**跑 dashboard 的 pytest：public repo 的安全檢查（無 .pkl、
+# 無 2025-02-01 之前的資料、無 .env）在 public_data/ 是空的時候會 skip，
+# 只有資料包產出後那幾條才真的驗得到。
+export-public:  ## 產出 public repo 的資料包到 $(DASHBOARD)/public_data（並驗安全）
 	$(PY) -m engine.export.build_public_bundle --out $(DASHBOARD)/public_data
+	@echo ""
+	@echo "  ── 驗 public repo 的安全檢查（資料包已存在，skip 的那幾條現在會真的跑）──"
+	@cd $(DASHBOARD) && $(MAKE) test
 
 # 刻意只印指令、不自動 push —— public repo 推出去就收不回來了，
 # 由人看過 git status 再決定。

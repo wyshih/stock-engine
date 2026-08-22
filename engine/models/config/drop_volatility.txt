@@ -1,0 +1,16 @@
+ma_squeeze_sz
+ma_squeeze_szx
+bb_width_pct_sz
+bb_width_pct_szx
+bb_width_rank_sz
+bb_width_rank_szx
+atr_rank_sz
+atr_rank_szx
+std_ratio_sz
+std_ratio_szx
+natr_14_sz
+natr_14_szx
+tl_channel_width_sz
+tl_channel_width_szx
+limit_hit_rate_sz
+limit_hit_rate_szx

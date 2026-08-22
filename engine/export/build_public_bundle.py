@@ -39,6 +39,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from engine.backtest import summary as summary_mod
+from engine.backtest.summary import MATCHED_TOP_PCT, MODEL_KEYS
 from engine.models.bundle import CHOSEN_THRESHOLDS, score_path, sigcurve_path
 from engine.paths import DATA_DIR, PROJECT_ROOT
 
@@ -50,20 +52,12 @@ TEST_START = "2025-02-01"
 TEST_END = "2026-07-31"
 SPLITS = ("test", "test2")
 
-MODEL_KEYS = (
-    "m1_base_up20", "m2_nomkt_up20", "m3_v3_up20", "m4_v3nomkt_up20", "m5_v3nomv_up20",
-    "m6_base_nobear", "m7_nomkt_nobear", "m8_v3_nobear", "m9_v3nomkt_nobear",
-    "m10_v3nomv_nobear",
-)
-
 DEFAULT_OUT = PROJECT_ROOT.parent / "dashboard" / "public_data"
 
 # GitHub 對單檔 > 100MB 直接拒收，>50MB 會警告。留一點餘裕。
 MAX_FILE_MB = 90
 MAX_TOTAL_MB = 200
 
-# 訊號數對齊版：每日取分數最高的前 1.5%（BACKTEST_LOG #28）
-MATCHED_TOP_PCT = 0.015
 
 DISCLAIMER = (
     "本站顯示的是模型測試期（2025-02 ~ 2026-07）的回溯結果，不是即時預測，"
@@ -192,74 +186,16 @@ def copy_stock_list(out_dir: Path) -> None:
     logger.info(f"stock_list：{len(sl):,} 檔")
 
 
-# ── 回測（唯一實作，見 CLAUDE.md 規則 8 / 9）──────────────────────────────────
-
-def _combined_score_file(key: str, tmp_dir: Path) -> Path:
-    frames = []
-    for split in SPLITS:
-        path = score_path(key, split)
-        if path.exists():
-            frames.append(pd.read_parquet(path))
-    out = pd.concat(frames, ignore_index=True)
-    out["date"] = pd.to_datetime(out["date"])
-    out = out[(out["date"] >= TEST_START) & (out["date"] <= TEST_END)]
-    out = out.drop_duplicates(subset=["date", "stock_id"]).sort_values(["date", "stock_id"])
-    path = tmp_dir / f"_bt_{key}.parquet"
-    out.to_parquet(path, index=False)
-    return path
-
-
-def _top_pct_score_file(key: str, tmp_dir: Path, pct: float) -> Path:
-    """每日只留分數最高的前 pct 比例 —— 訊號數對齊版的輸入。"""
-    src = pd.read_parquet(_combined_score_file(key, tmp_dir))
-    # 用 rank 而不是 groupby().apply(head)：後者會把 date 收進 index，
-    # 寫出去的 parquet 就沒有 date 欄，simulate() 直接拒收。
-    rank = src.groupby("date")["score"].rank(method="first", ascending=False)
-    limit = src.groupby("date")["score"].transform("size").mul(pct).round().clip(lower=1)
-    keep = src[rank <= limit].sort_values(["date", "stock_id"]).reset_index(drop=True)
-    path = tmp_dir / f"_bt_{key}_top.parquet"
-    keep.to_parquet(path, index=False)
-    return path
-
-
-def _run(key: str, score_file: Path, threshold: float, mode: str) -> dict:
-    from engine.backtest.backtest import CURRENT_EXIT_RULES as R, performance, simulate
-
-    trades, price = simulate(
-        "test", score_path=score_file, threshold=threshold, dedup=False,
-        take_profit=R["take_profit"], stop_ma=R["stop_ma"],
-        trail_trigger=R["trail_trigger"], trail_pct=R["trail_pct"],
-        stop_loss=R["stop_loss"],
-    )
-    row = {"model": key, "mode": mode, "threshold": threshold, "trades": 0}
-    if trades.empty:
-        return row
-    perf = performance(trades, price)
-    row.update({
-        "trades": perf["trades"], "win_rate": perf["win_rate"],
-        "avg_return": perf["avg_return"], "total_return": perf["total_return"],
-        "sharpe": perf["sharpe"], "max_drawdown": perf["max_drawdown"],
-    })
-    return row
-
+# ── 回測 ──────────────────────────────────────────────────────────────────────
+# 實作在 engine/backtest/summary.py（唯一一份，`make backtest` 也走那裡）。
+# 這裡只是把 public 展示窗口的區間傳進去 —— 內部驗證與 public 展示共用同一套
+# 回測，區間不同而已。回測邏輯不得在這裡出現第二份（CLAUDE.md 規則 8）。
 
 def build_backtest_summary(out_dir: Path, tmp_dir: Path) -> pd.DataFrame:
-    """兩張表：絕對門檻版 + 訊號數對齊版（每日前 1.5%）。
-
-    ⚠️ 兩張都要 —— 本系統「訊號越少報酬越高」，只看固定門檻的比較會退化成
-    「門檻鬆緊」的比較（doc/BACKTEST_LOG.md #28）。
-    """
-    rows = []
-    for key in MODEL_KEYS:
-        thr = CHOSEN_THRESHOLDS[key]
-        logger.info(f"回測 {key}：絕對門檻 {thr}")
-        rows.append(_run(key, _combined_score_file(key, tmp_dir), thr, "absolute"))
-        logger.info(f"回測 {key}：訊號數對齊（每日前 {MATCHED_TOP_PCT:.1%}）")
-        rows.append(_run(key, _top_pct_score_file(key, tmp_dir, MATCHED_TOP_PCT), 0.0, "matched_top"))
-    df = pd.DataFrame(rows)
-    df.to_csv(out_dir / "backtest_summary.csv", index=False)
-    logger.info(f"backtest_summary：{len(df)} 列")
-    return df
+    """public 資料包用的回測表：固定在展示窗口 TEST_START ~ TEST_END。"""
+    return summary_mod.build_backtest_summary(
+        out_dir, tmp_dir, splits=SPLITS, start=TEST_START, end=TEST_END,
+        keys=MODEL_KEYS)
 
 
 # ── 體積護欄 ──────────────────────────────────────────────────────────────────
