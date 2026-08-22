@@ -1,0 +1,71 @@
+# 環境變數
+.env
+
+# 資料檔（11GB，不進 git）
+/data/*
+!/data/.gitkeep
+
+# log
+/logs/*
+!/logs/.gitkeep
+
+# 訓練好的模型檔（1.6GB，不進 git，只存本機）
+/models/*
+!/models/.gitkeep
+
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虛擬環境
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 暫存
+*.tmp
+*.log
+
+# 逐次修改留下的備份檔（本機用，不進 git）
+*.bak
+*.bak2
+*.bak_*
+models_backup_*/
+models_new_*/
+models_tl_*/
+
+# 工具目錄（Claude Code 的 skills / 設定，不屬於專案原始碼）
+.agents/
+.claude/
+skills-lock.json
+
+# worktree 的 .venv 是指向主 repo 的符號連結，`.venv/` 這條攔不到（沒有斜線）
+.venv
+# v2 特徵實驗的資料產物，與 data/ 同性質不進版控
+data_v2/

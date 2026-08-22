@@ -1,0 +1,37 @@
+# 資料處理
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==18.1.0
+scipy==1.13.1
+
+# 技術指標
+# TA-Lib 需先安裝 C 二進位（0.4.29 與 Homebrew 現行 ta-lib 0.7.x 不相容，改用 0.6.8）：
+#   Mac：brew install ta-lib libomp
+#   Oracle Linux：sudo yum install ta-lib ta-lib-devel
+TA-Lib==0.6.8
+
+# 資料來源
+yfinance==1.4.1
+requests==2.32.3
+FinMind==2.0.4
+exchange-calendars==4.5.6
+
+# ML / 模型
+scikit-learn==1.5.2
+lightgbm==4.5.0
+# PyTorch（DL 可選，平台相關，請依官網安裝）
+# https://pytorch.org/get-started/locally/
+
+# 環境變數
+python-dotenv==1.0.1
+
+# 介面
+streamlit==1.39.0
+matplotlib==3.9.2
+seaborn==0.13.2
+
+# 開發工具
+tqdm==4.66.5
+pytest==8.3.5
+hypothesis==6.112.2
+pip-audit==2.9.0
