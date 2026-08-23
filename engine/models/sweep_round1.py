@@ -31,13 +31,13 @@ Round 4（新切分，只剩 RF，往 Round 2 最佳解的邊界外延伸）：
 from __future__ import annotations
 
 import argparse
+import itertools
 import logging
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
-import optuna
 import pandas as pd
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 
@@ -59,9 +59,10 @@ from engine.models.train_single import (  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
-optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 RANDOM_STATE = 42
+# TPE_TRIALS 保留為文件：lightgbm / lambdarank 當初用 TPE 跑 80 trials。
+# Optuna 已移除，現行流程用不到（見 run_sweep 的說明）。
 TPE_TRIALS = 80
 EARLY_STOPPING_ROUNDS = 100
 
@@ -129,10 +130,6 @@ FOREST_FIXED_PARAMS_R4 = {"class_weight": None}   # n_estimators 走 FOREST_FIXE
 # 記憶體不受影響：sklearn RF 用 threading backend，執行緒共用同一份 X 矩陣。
 FOREST_FIXED = dict(n_estimators=300, n_jobs=8, random_state=RANDOM_STATE)
 GBM_FIXED = dict(bagging_fraction=0.7, n_estimators=3000, random_state=RANDOM_STATE, n_jobs=4)
-
-
-def suggest(trial: optuna.Trial, space: dict) -> dict:
-    return {k: trial.suggest_categorical(k, v) for k, v in space.items()}
 
 
 def _fit_forest(cls, params, x_train, y_train, *_):
@@ -356,38 +353,60 @@ def load_done(out_path: Path, space: dict) -> tuple[list[dict], dict[tuple, floa
         return [], {}
     df = pd.read_csv(out_path)
     records = df.to_dict("records")
-    done = {params_key({k: row[k] for k in space}): row["val_es_auc"] for row in records}
+    # 進度值用 val_sel_auc —— 選組態一律看它（best_config 也是），
+    # 舊版這裡用 val_es_auc 是為了配合 Optuna 的目標值，那個耦合已經拿掉。
+    done = {params_key({k: row[k] for k in space}): row["val_sel_auc"] for row in records}
     logger.info(f"接續 {out_path.name}：已完成 {len(done)} 組")
     return records, done
 
 
 def run_sweep(model_name: str, data: dict, out_path: Path, jobs: int = 1,
               key: str | None = None) -> pd.DataFrame:
-    space, fixed = search_space(model_name, current_round(), key)
+    """把搜尋空間的所有組合跑一遍。
 
-    grid = model_name in ("rf", "extratrees")
-    sampler = (
-        optuna.samplers.GridSampler(space, seed=RANDOM_STATE)
-        if grid
-        else optuna.samplers.TPESampler(seed=RANDOM_STATE)
-    )
-    n_trials = int(np.prod([len(v) for v in space.values()])) if grid else TPE_TRIALS
-    logger.info(f"{model_name}：{n_trials} 個組態")
+    2026-08-23：**拿掉 Optuna，改成純網格迴圈**（使用者指定）。
+
+    原本用 `optuna.samplers.GridSampler`，但 GridSampler 的行為就是「把所有組合
+    跑一遍」—— 跟兩層迴圈完全等價，卻帶來兩個代價：
+
+    1. 多一個相依（`optuna`，而且它正是舊 repo requirements 漏列的三個之一）
+    2. **一個會咬人的耦合**：Optuna 需要 objective 回傳一個純量目標，這份程式
+       寫死回傳 `val_es_auc`。2026-08-23 把 val_es 從評估切分拿掉之後，第一組
+       跑完要回填時就 `KeyError` 炸掉 —— 模型其實已經訓練完、AUC 也算好了，
+       純粹是死在這個不必要的耦合上。
+
+    ⚠️ 用 TPE 的模型家族（lightgbm / lambdarank）不走這裡 —— 它們需要真正的
+    貝氏搜尋。要復用那些家族就得把 Optuna 加回來，見 git 歷史。
+
+    `jobs > 1` 已不支援：模型一個一個訓練、內層吃 n_jobs=8，外層再並行會超賣。
+    """
+    if model_name not in ("rf", "extratrees"):
+        raise NotImplementedError(
+            f"{model_name} 原本走 Optuna 的 TPE 搜尋，2026-08-23 移除 Optuna 時一併停用。"
+            "現行流程只用 rf。要復用請看 git 歷史把 TPE 路徑加回來。")
+    if jobs != 1:
+        raise ValueError(
+            f"--jobs={jobs}：外層並行已停用。模型一個一個跑、內層 n_jobs 吃滿，"
+            "兩層相乘會超賣（舊 repo 2026-08-14 實測 load 衝到 23，每件都變慢）。")
+
+    space, fixed = search_space(model_name, current_round(), key)
+    names = list(space)
+    combos = [dict(zip(names, values)) for values in itertools.product(*(space[n] for n in names))]
+    logger.info(f"{model_name}：{len(combos)} 個組態")
 
     records, done = load_done(out_path, space)
 
-    def objective(trial: optuna.Trial) -> float:
-        params = suggest(trial, space)
-        key = params_key(params)
-        if key in done:
-            logger.info(f"  [{len(records)}/{n_trials}] 跳過已完成組態 {params}")
-            return done[key]
+    for combo in combos:
+        pkey = params_key(combo)
+        if pkey in done:
+            logger.info(f"  [{len(records)}/{len(combos)}] 跳過已完成組態 {combo}")
+            continue
 
         started = time.time()
-        predict = build_predictor(model_name, {**params, **fixed}, data)
+        predict = build_predictor(model_name, {**combo, **fixed}, data)
 
         row = {
-            "model": model_name, **params, **fixed,
+            "model": model_name, **combo, **fixed,
             "seconds": round(time.time() - started, 1),
         }
         for split in sweep_eval_splits():
@@ -395,21 +414,15 @@ def run_sweep(model_name: str, data: dict, out_path: Path, jobs: int = 1,
             row[f"{split}_auc"] = round(metrics["auc"], 4)
             row[f"{split}_lift"] = round(metrics["pr_lift"], 3)
         records.append(row)
-        done[key] = row["val_es_auc"]
+        done[pkey] = row["val_sel_auc"]
 
         pd.DataFrame(records).to_csv(out_path, index=False)  # 中途被中斷也留得住
         logger.info(
-            f"  [{len(records)}/{n_trials}] "
+            f"  [{len(records)}/{len(combos)}] "
             + " | ".join(f"{s} {row[f'{s}_auc']:.4f}" for s in sweep_eval_splits())
             + f" | {row['seconds']:.0f}s"
         )
-        return row["val_es_auc"]
 
-    study = optuna.create_study(direction="maximize", sampler=sampler)
-    # jobs > 1 時多個 trial 同時訓練。內層 n_jobs 固定 4，兩層相乘會把記憶體榨乾
-    # （PLAN 記過：joblib 的 loky worker 被砍後不會跟父行程一起清掉，會疊加佔用），
-    # 所以 jobs × 4 不要超過實體核心數。
-    study.optimize(objective, n_trials=n_trials, n_jobs=jobs)
     return pd.DataFrame(records)
 
 

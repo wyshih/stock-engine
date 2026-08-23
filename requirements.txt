@@ -24,10 +24,10 @@ exchange-calendars==4.5.6
 # ML / 模型
 scikit-learn==1.5.2
 lightgbm==4.5.0
-# 超參數搜尋（sweep_round1.py）。舊 repo 的 requirements 漏了這個 —— 它只裝在
-# 當時那個 venv 裡，從乾淨環境重建會在 `make train` 的調參階段才炸（2026-08-22
-# 用相依掃描抓到）。
-optuna==4.9.0
+# optuna 已於 2026-08-23 移除 —— RF 的搜尋是全網格，GridSampler 跟兩層迴圈
+# 等價，卻多帶一個相依與一個會咬人的耦合（objective 必須回傳純量目標，寫死了
+# val_es_auc，把 val_es 從評估切分拿掉時就炸）。
+# 要復用 lightgbm / lambdarank 的 TPE 搜尋才需要把它加回來。
 # PyTorch（DL 可選，平台相關，請依官網安裝）
 # https://pytorch.org/get-started/locally/
 
