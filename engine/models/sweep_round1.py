@@ -202,6 +202,21 @@ def build_predictor(model_name: str, params: dict, data: dict):
     return build_fitted(model_name, params, data)[0]
 
 
+# ── 調參只看驗證期，不碰測試期（2026-08-23 使用者指定）─────────────────────
+# 兩個理由：
+# 1. **方法論**：組態選擇一律看 val_sel。在搜尋階段連算帶記 test 分數，等於把
+#    測試期攤在眼前 —— 就算程式沒拿它排序，人看了就很難不受影響。測試期只在
+#    最終回測時看一次。
+# 2. **成本**：每一組都要對 test（約 44 萬列）與 test2（約 25 萬列）各做一次
+#    推論，前處理階段也要多載入這兩個切分的 X 矩陣。省下約一成時間與一部分記憶體。
+SWEEP_EVAL_SPLITS = ("val_es", "val_sel")
+
+
+def sweep_eval_splits() -> tuple[str, ...]:
+    """調參階段要評估的切分：只取驗證期，且必須真的存在於當前 round。"""
+    return tuple(s for s in eval_splits() if s in SWEEP_EVAL_SPLITS)
+
+
 def prepare(features_path: Path, intersect_with: Path | None,
             drop_prefixes: tuple[str, ...] = (), drop_cols: tuple[str, ...] = (),
             label_file: Path | None = None, label_col: str = LABEL) -> dict:
@@ -222,7 +237,9 @@ def prepare(features_path: Path, intersect_with: Path | None,
         cols = [c for c in cols if c not in set(drop_cols)]
     logger.info(f"特徵 {len(cols)} 欄")
 
-    frames = {name: split_frame(df, name) for name in splits()}
+    # 只載入 train 與驗證期 —— 測試期在調參階段完全不碰（見 SWEEP_EVAL_SPLITS）
+    wanted = ("train",) + sweep_eval_splits()
+    frames = {name: split_frame(df, name) for name in splits() if name in wanted}
     frames = {k: v[v[label_col].notna()] for k, v in frames.items()}
     train = frames["train"]
     others = {k: v for k, v in frames.items() if k != "train"}
@@ -268,6 +285,7 @@ MODEL_SPACES = {
 }
 # 搜尋與正式訓練同樹數，且不再覆寫 n_estimators（走 FOREST_FIXED 的 300）
 MODEL_FIXED_PARAMS = {"class_weight": None}
+
 
 
 def search_space(model_name: str, round_no: int, key: str | None = None) -> tuple[dict, dict]:
@@ -349,7 +367,7 @@ def run_sweep(model_name: str, data: dict, out_path: Path, jobs: int = 1,
             "model": model_name, **params, **fixed,
             "seconds": round(time.time() - started, 1),
         }
-        for split in eval_splits():
+        for split in sweep_eval_splits():
             metrics = evaluate(data["y"][split], predict(data["x"][split]))
             row[f"{split}_auc"] = round(metrics["auc"], 4)
             row[f"{split}_lift"] = round(metrics["pr_lift"], 3)
@@ -359,7 +377,7 @@ def run_sweep(model_name: str, data: dict, out_path: Path, jobs: int = 1,
         pd.DataFrame(records).to_csv(out_path, index=False)  # 中途被中斷也留得住
         logger.info(
             f"  [{len(records)}/{n_trials}] "
-            + " | ".join(f"{s} {row[f'{s}_auc']:.4f}" for s in eval_splits())
+            + " | ".join(f"{s} {row[f'{s}_auc']:.4f}" for s in sweep_eval_splits())
             + f" | {row['seconds']:.0f}s"
         )
         return row["val_es_auc"]
@@ -407,7 +425,7 @@ def main() -> None:
 
     print(f"\n=== {args.model}：依 val_sel AUC 排序前 10 ===")
     top = results.sort_values("val_sel_auc", ascending=False).head(10)
-    print(top[[f"{s}_auc" for s in eval_splits()]].to_string())
+    print(top[[f"{s}_auc" for s in sweep_eval_splits()]].to_string())
     print(f"\n完整結果：{out_path}")
 
 
