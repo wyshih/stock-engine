@@ -186,7 +186,11 @@ def build_fitted(model_name: str, params: dict, data: dict):
     （`build_predictor()` 只回傳閉包，模型用完就被 GC）。訓練邏輯完全共用，
     這裡只是多把 model 傳出來。
     """
-    args = (data["x_train"], data["y_train"], data["x"]["val_es"], data["y"]["val_es"])
+    # val_es 只有神經網路與 LambdaRank 的 early stopping 會用；RF / ExtraTrees
+    # 收下就丟掉。SWEEP_EVAL_SPLITS 不含 val_es 時它根本不會被載入，所以用 .get()
+    # —— 要復用 NN/LambdaRank 就得把 val_es 加回 SWEEP_EVAL_SPLITS。
+    args = (data["x_train"], data["y_train"],
+            data["x"].get("val_es"), data["y"].get("val_es"))
     if model_name == "rf":
         return _fit_forest(RandomForestClassifier, params, *args)
     if model_name == "extratrees":
@@ -209,8 +213,11 @@ def build_predictor(model_name: str, params: dict, data: dict):
 #    測試期攤在眼前 —— 就算程式沒拿它排序，人看了就很難不受影響。測試期只在
 #    最終回測時看一次。
 # 2. **成本**：每一組都要對 test（約 44 萬列）與 test2（約 25 萬列）各做一次
-#    推論，前處理階段也要多載入這兩個切分的 X 矩陣。省下約一成時間與一部分記憶體。
-SWEEP_EVAL_SPLITS = ("val_es", "val_sel")
+#    推論，前處理階段也要多載入這兩個切分的 X 矩陣。
+# 3. **val_es 也拿掉了**（2026-08-23）：它的用途是神經網路的 early stopping，
+#    RF 根本不用。組態選擇一律看 val_sel，留著 val_es 只是多載入 22 萬列、
+#    每組多做一次推論。要復用 NN / LambdaRank 時再加回來。
+SWEEP_EVAL_SPLITS = ("val_sel",)
 
 
 def sweep_eval_splits() -> tuple[str, ...]:
@@ -254,7 +261,9 @@ def prepare(features_path: Path, intersect_with: Path | None,
         "y": {k: v[label_col].to_numpy(dtype=np.int8) for k, v in others.items()},
         # LambdaRank 的 group：每個交易日全市場一組，要跟列的排序一致
         "groups_train": train.groupby("date").size().to_numpy(),
-        "groups_es": others["val_es"].groupby("date").size().to_numpy(),
+        # 同上：沒載入 val_es 就沒有 group（只有 LambdaRank 要）
+        "groups_es": (others["val_es"].groupby("date").size().to_numpy()
+                      if "val_es" in others else None),
     }
 
 
@@ -276,20 +285,29 @@ MODEL_SPACES = {
     # depth 10/15/20 的 val_sel 平均分別是 0.6064 / 0.6079 / 0.6067，**差 0.0015**，
     # 但 depth=20 比 depth=10 慢 63%（1,078s vs 662s）。留兩個端點是為了保住
     # 「淺 vs 深」的對照 —— 萬一在別的特徵集或 label 上 depth 真的有影響，看得出來。
-    "m1_base_up20":   {"max_features": [15, 20], "min_samples_leaf": [100, 200],
-                       "max_depth": [10, 20]},
-    "m2_nomkt_up20":  {"max_features": [15, 20], "min_samples_leaf": [100, 200],
-                       "max_depth": [10, 20]},
-    "m6_base_nobear": {"max_features": [15, 20], "min_samples_leaf": [100, 200],
-                       "max_depth": [10, 20]},
+    # min_samples_leaf 固定（2026-08-23）：前一輪 7 組實測，leaf 100 vs 200 的
+    # val_sel 平均是 0.6060 vs 0.6074（差 0.0013，三個參數中最小），**耗時只差
+    # 1.02 倍**。也就是說它既沒訊號、也不影響速度，留在格子裡純粹讓組數翻倍。
+    # 固定值取 200：實測較佳，且與 norf 最佳解一致。
+    "m1_base_up20":   {"max_features": [15, 20], "max_depth": [10, 20]},
+    "m2_nomkt_up20":  {"max_features": [15, 20], "max_depth": [10, 20]},
+    "m6_base_nobear": {"max_features": [15, 20], "max_depth": [10, 20]},
     # v3 家族：518 欄。depth 這次才第一次有對照 —— norf 那 7 組全部固定在 30
-    "m3_v3_up20":     {"max_features": [15, 20], "min_samples_leaf": [200, 400],
-                       "max_depth": [15, 30]},
-    "m8_v3_nobear":   {"max_features": [15, 20], "min_samples_leaf": [200, 400],
-                       "max_depth": [15, 30]},
+    # v3 的 leaf 固定 400：norf 最佳解，且我們上一輪 v3 實測 400 (0.6004) 略勝
+    # 200 (0.5997)。
+    "m3_v3_up20":     {"max_features": [15, 20], "max_depth": [15, 30]},
+    "m8_v3_nobear":   {"max_features": [15, 20], "max_depth": [15, 30]},
 }
 # 搜尋與正式訓練同樹數，且不再覆寫 n_estimators（走 FOREST_FIXED 的 300）
-MODEL_FIXED_PARAMS = {"class_weight": None}
+# 固定但仍寫進 CSV 的參數。min_samples_leaf 在這裡（不在搜尋空間裡），
+# 所以 CSV 仍會記錄實際用的值，日後回查得到。
+MODEL_FIXED_PARAMS = {
+    "m1_base_up20":   {"class_weight": None, "min_samples_leaf": 200},
+    "m2_nomkt_up20":  {"class_weight": None, "min_samples_leaf": 200},
+    "m6_base_nobear": {"class_weight": None, "min_samples_leaf": 200},
+    "m3_v3_up20":     {"class_weight": None, "min_samples_leaf": 400},
+    "m8_v3_nobear":   {"class_weight": None, "min_samples_leaf": 400},
+}
 
 
 
@@ -305,7 +323,7 @@ def search_space(model_name: str, round_no: int, key: str | None = None) -> tupl
                 f"{key} 沒有定義搜尋空間。每個模型都必須有自己的一份 —— "
                 f"請在 MODEL_SPACES 補上，不要沿用別的模型的。"
                 f"目前有：{', '.join(MODEL_SPACES)}")
-        return dict(MODEL_SPACES[key]), dict(MODEL_FIXED_PARAMS)
+        return dict(MODEL_SPACES[key]), dict(MODEL_FIXED_PARAMS[key])
     if round_no == 2:
         if model_name != "rf":
             raise ValueError(f"Round 2 的表格模型只留 rf，不支援 {model_name}")
