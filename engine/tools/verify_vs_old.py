@@ -40,6 +40,38 @@ DEFAULT_OLD = Path("/Users/todd/Documents/projects/stock_committee_norf")
 
 TOLERANCE = 1e-9
 KEYS = ["date", "stock_id"]
+# 不是每個檔都用 (date, stock_id) 當鍵，用錯會靜默變成笛卡兒積 ——
+# revenue 是月頻、鍵是 (announce_date, stock_id)；market_features 是大盤層級，
+# 只有 date、沒有 stock_id（拿 KEYS 去 merge 會直接 KeyError 中止整份比對）。
+# 2026-08-24 第一次實跑就同時踩到這兩個：revenue 比出「共同 1,428 萬列」
+# （它總共只有 16 萬列），market_features 則讓後半段檢查全部沒跑到。
+FILE_KEYS = {
+    "revenue": ["announce_date", "stock_id"],
+    "revenue_features": ["announce_date", "stock_id"],
+    "market_features": ["date"],
+    "stock_list": ["stock_id"],
+    "exright": ["date", "stock_id"],
+}
+
+
+# 出現數值差異時，要用趨勢異常去歸責的欄位。挑的是「時間序列上應該連續」的欄，
+# 這樣「某一天突然跳掉」才有意義；排名類（*_rank）不適用，它是橫斷面的。
+# 欄位 → 用哪種歸責法。
+#   trend      值在時間上應該連續（本益比、股價）→ 看誰脫離鄰近日的水準
+#   duplicate  每日流量型（三大法人買賣超）跳動劇烈，趨勢法判不出來
+#              → 改看誰的值與該股其他日期重複（抓到別日資料的指紋）
+# 單邊指紋至少要出現這麼多次才下判定，避免用一兩筆巧合定罪
+MIN_FINGERPRINT_HITS = 5
+
+BLAME_COLUMNS = {
+    "fundamental": [("per", "trend"), ("pbr", "trend")],
+    "chip": [("foreign_buy", "duplicate"), ("foreign_net", "duplicate")],
+    "price": [("close", "trend")],
+}
+
+
+def keys_for(name: str) -> list[str]:
+    return FILE_KEYS.get(name, KEYS)
 
 RAW_FILES = ["price", "chip", "fundamental", "revenue", "exright", "stock_list"]
 FEATURE_FILES = [
@@ -119,6 +151,114 @@ def _compare_values(new: pd.DataFrame, old: pd.DataFrame, keys: list[str],
     return len(bad), detail
 
 
+def blame_by_trend(new: pd.DataFrame, old: pd.DataFrame, name: str,
+                   keys: list[str], col: str, sample: int = 40) -> str | None:
+    """差異日上，哪一邊脫離自己的時間序列趨勢？
+
+    「新舊不同」本身不告訴你誰對。這支用一個很單純的判準：把差異日前後各一個
+    有資料的交易日拿來當參考，看哪一邊的值離參考區間比較遠。
+
+    2026-08-24 用它查出的兩件事（都是**舊 repo 壞掉、重建修好了**）：
+      fundamental  25 天全市場的 per/pbr/殖利率
+      chip          6 天約 1,000 檔的三大法人與融資融券
+    決定性證據不只是趨勢 —— 舊 repo 在 2025-09-22 給 1101 的 foreign_buy 是
+    2,051,000，而完全相同的數值也出現在 2024-06-11（另一個差異日）。同一筆錯誤
+    資料寫進兩個不同日期，是「抓到錯誤回應卻照寫」的典型特徵。
+
+    回傳一句判定，或 None（資料不足以判斷）。
+    """
+    if "date" not in new.columns or "stock_id" not in new.columns:
+        return None
+    merged = new.merge(old, on=keys, suffixes=("_n", "_o"))
+    a, b = merged[f"{col}_n"], merged[f"{col}_o"]
+    bad = merged[(~a.isna()) & (~b.isna()) & ((a - b).abs() > TOLERANCE)]
+    if bad.empty:
+        return None
+
+    dates = sorted(bad["date"].unique())
+    verdict = {"new": 0, "old": 0, "tie": 0}
+    for _, row in bad.head(sample).iterrows():
+        sid, day = row["stock_id"], row["date"]
+        series = {}
+        for side, frame in (("new", new), ("old", old)):
+            hist = frame[(frame["stock_id"] == sid) & (frame["date"] != day)]
+            near = hist[(hist["date"] - day).abs() <= pd.Timedelta(days=5)][col].dropna()
+            series[side] = near
+        ref = pd.concat([series["new"], series["old"]]).dropna()
+        if len(ref) < 2:
+            verdict["tie"] += 1
+            continue
+        centre = float(ref.median())
+        d_new, d_old = abs(row[f"{col}_n"] - centre), abs(row[f"{col}_o"] - centre)
+        verdict["new" if d_new > d_old else "old" if d_old > d_new else "tie"] += 1
+
+    checked = sum(verdict.values())
+    if not checked:
+        return None
+    loser = max(("new", "old"), key=lambda k: verdict[k])
+    share = verdict[loser] / checked
+    if share < 0.7:
+        return (f"{col}：{len(dates)} 天有差異，但抽查 {checked} 筆無法判定誰對"
+                f"（新脫離 {verdict['new']}、舊脫離 {verdict['old']}）")
+    side_zh = "新 repo" if loser == "new" else "舊 repo"
+    return (f"{col}：差異集中在 {len(dates)} 天；抽查 {checked} 筆中 {verdict[loser]} 筆"
+            f"（{share:.0%}）是**{side_zh}**脫離自身趨勢 → 該側的資料有問題")
+
+
+def blame_by_duplicate(new: pd.DataFrame, old: pd.DataFrame, keys: list[str],
+                       col: str, sample: int = 40) -> str | None:
+    """差異日上，哪一邊的值是「別的日期的複製品」？
+
+    趨勢法對每日流量型的欄位（三大法人買賣超）判不出來 —— 那種數字本來就跳動
+    劇烈，拿鄰近中位數當參考沒有意義（2026-08-24 實測：新舊各 9 筆，平手）。
+
+    真正能定案的是這個指紋：**同一個數值出現在同一檔股票的兩個不同日期**。
+    正常的成交數字幾乎不可能剛好重複；會重複，通常是抓取時拿到了別的日期的
+    回應卻照著寫進去。實例：舊 repo 給 1101 在 2025-09-22 的 foreign_buy 是
+    2,051,000，而完全相同的數值也出現在 2024-06-11 —— 那正是另一個差異日。
+
+    只看非零值：0 本來就會大量重複，不具鑑別力。
+    """
+    merged = new.merge(old, on=keys, suffixes=("_n", "_o"))
+    a, b = merged[f"{col}_n"], merged[f"{col}_o"]
+    bad = merged[(~a.isna()) & (~b.isna()) & ((a - b).abs() > TOLERANCE)]
+    bad = bad[(bad[f"{col}_n"] != 0) & (bad[f"{col}_o"] != 0)]
+    if bad.empty:
+        return None
+
+    tally = {"new": 0, "old": 0, "both": 0, "neither": 0}
+    for _, row in bad.head(sample).iterrows():
+        sid, day = row["stock_id"], row["date"]
+        dup = {}
+        for side, frame, value in (("new", new, row[f"{col}_n"]),
+                                   ("old", old, row[f"{col}_o"])):
+            others = frame[(frame["stock_id"] == sid) & (frame["date"] != day)][col]
+            dup[side] = bool(((others - value).abs() < TOLERANCE).any())
+        if dup["new"] and dup["old"]:
+            tally["both"] += 1
+        elif dup["new"]:
+            tally["new"] += 1
+        elif dup["old"]:
+            tally["old"] += 1
+        else:
+            tally["neither"] += 1
+
+    checked = sum(tally.values())
+    # 判定看**單邊**的不對稱，不看佔比 —— 「兩者皆是」多半是雜訊：1000、2000
+    # 這種整數在同一檔股票的不同日期本來就會重複，不具鑑別力。真正的訊號是
+    # 「只有其中一邊的值是複製品」。實測 foreign_buy：新 0、舊 9、兩者皆是 16。
+    hi, lo = max(tally["new"], tally["old"]), min(tally["new"], tally["old"])
+    too_few = hi < MIN_FINGERPRINT_HITS          # 樣本太少，不用一兩筆巧合定罪
+    not_lopsided = lo > 0 and hi < 3 * lo        # 兩邊都有，差距不夠懸殊
+    if too_few or not_lopsided:
+        return (f"{col}：抽查 {checked} 筆，重複值指紋不明顯"
+                f"（新 {tally['new']}、舊 {tally['old']}、兩者皆是 {tally['both']}）")
+    loser = "new" if tally["new"] > tally["old"] else "old"
+    side_zh = "新 repo" if loser == "new" else "舊 repo"
+    return (f"{col}：抽查 {checked} 筆中 {tally[loser]} 筆是**{side_zh}**的值與該股其他"
+            f"日期重複（抓到別日資料的指紋）→ 該側的資料有問題")
+
+
 def check_raw(report: Report, old_data: Path) -> None:
     print("\n原始資料")
     for name in RAW_FILES:
@@ -127,16 +267,26 @@ def check_raw(report: Report, old_data: Path) -> None:
         if new is None or old is None:
             report.skip(name, f"新={'有' if new is not None else '無'} 舊={'有' if old is not None else '無'}")
             continue
-        keys = KEYS if all(k in new.columns for k in KEYS) else ["stock_id"]
         problems = []
         if len(new) != len(old):
             problems.append(f"列數 {len(new):,} vs {len(old):,}")
         if "date" in new.columns and _span(new) != _span(old):
             problems.append(f"期間 {_span(new)} vs {_span(old)}")
-        n_bad, detail = _compare_values(new, old, keys, TOLERANCE)
+        n_bad, detail = _compare_values(new, old, keys_for(name), TOLERANCE)
         if n_bad:
             problems.append(detail)
         (report.fail if problems else report.ok)(name, "；".join(problems) or f"{len(new):,} 列　{_span(new) if 'date' in new.columns else ''}")
+
+        # 有數值差異時，進一步判定是哪一邊脫離趨勢 —— 「不同」不等於「新的錯」
+        if n_bad and name in BLAME_COLUMNS:
+            for col, how in BLAME_COLUMNS[name]:
+                if col not in new.columns or col not in old.columns:
+                    continue
+                fn = blame_by_trend if how == "trend" else blame_by_duplicate
+                verdict = (fn(new, old, name, keys_for(name), col) if how == "trend"
+                           else fn(new, old, keys_for(name), col))
+                if verdict:
+                    report.note(f"  ↳ {name}", verdict)
 
 
 def check_features(report: Report, old_data: Path) -> None:
@@ -152,7 +302,7 @@ def check_features(report: Report, old_data: Path) -> None:
             report.fail(name, f"欄位集合不同：新多 {sorted(new_cols - old_cols)[:5]}，"
                               f"舊多 {sorted(old_cols - new_cols)[:5]}")
             continue
-        n_bad, detail = _compare_values(_read(new_path), _read(old_path), KEYS, TOLERANCE)
+        n_bad, detail = _compare_values(_read(new_path), _read(old_path), keys_for(name), TOLERANCE)
         (report.fail if n_bad else report.ok)(name, detail)
 
     for name, expect_cols in MERGED_FEATURES.items():
@@ -172,11 +322,12 @@ def check_features(report: Report, old_data: Path) -> None:
             continue
         # 380/520 欄 × 3.3M 列一次讀爆記憶體，分批比
         n_bad_total, checked = 0, 0
-        value_cols = [c for c in new_cols if c not in KEYS]
+        value_cols = [c for c in new_cols if c not in keys_for(name)]
         for i in range(0, len(value_cols), 40):
             batch = value_cols[i:i + 40]
-            n_bad, _ = _compare_values(_read(new_path, KEYS + batch),
-                                       _read(old_path, KEYS + batch), KEYS, TOLERANCE)
+            k = keys_for(name)
+            n_bad, _ = _compare_values(_read(new_path, k + batch),
+                                       _read(old_path, k + batch), k, TOLERANCE)
             n_bad_total += n_bad
             checked += len(batch)
         (report.fail if n_bad_total else report.ok)(
