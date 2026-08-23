@@ -122,11 +122,12 @@ FOREST_SPACE_R4 = {
 }
 FOREST_FIXED_PARAMS_R4 = {"class_weight": None}   # n_estimators 走 FOREST_FIXED 的 300
 
-# n_jobs=6：Round 2 的訓練集是 Round 1 的 3 倍，單組要近一小時。內層吃 6 核、
-# 外層 --jobs 1 一次跑一組，比「外層 4 組 × 內層 4 核 = 16 執行緒」好——機器只有
-# 10 核，兩層相乘會超賣、徒增切換開銷，而且四座森林同時佔記憶體。
-# 一次一組還有個好處：每 ~20 分鐘就出一組結果，中途看趨勢或喊停都方便。
-FOREST_FIXED = dict(n_estimators=300, n_jobs=6, random_state=RANDOM_STATE)
+# n_jobs=8（2026-08-23 使用者指定，原本 6）：機器 10 核，實測 n_jobs=6 時 CPU
+# 有 27% 閒置（約 2.7 核）。模型一個一個訓練、外層不並行，內層就該吃滿，留 2 核
+# 給系統。**不要改成外層並行** —— 兩層相乘會超賣，而且四座森林同時佔記憶體
+# （舊 repo 2026-08-14 實測 load 衝到 23，每件都變慢）。
+# 記憶體不受影響：sklearn RF 用 threading backend，執行緒共用同一份 X 矩陣。
+FOREST_FIXED = dict(n_estimators=300, n_jobs=8, random_state=RANDOM_STATE)
 GBM_FIXED = dict(bagging_fraction=0.7, n_estimators=3000, random_state=RANDOM_STATE, n_jobs=4)
 
 
@@ -271,12 +272,16 @@ def prepare(features_path: Path, intersect_with: Path | None,
 # label 搜，選出來的組態很可能不同。這正是「不得共用組態」的意義。
 MODEL_SPACES = {
     # base 家族：344 / 332 欄，label_up20 與 label_nobear
+    # max_depth 從 10/15/20 砍成兩個端點（2026-08-23）：前一輪 7 組實測，
+    # depth 10/15/20 的 val_sel 平均分別是 0.6064 / 0.6079 / 0.6067，**差 0.0015**，
+    # 但 depth=20 比 depth=10 慢 63%（1,078s vs 662s）。留兩個端點是為了保住
+    # 「淺 vs 深」的對照 —— 萬一在別的特徵集或 label 上 depth 真的有影響，看得出來。
     "m1_base_up20":   {"max_features": [15, 20], "min_samples_leaf": [100, 200],
-                       "max_depth": [10, 15, 20]},
+                       "max_depth": [10, 20]},
     "m2_nomkt_up20":  {"max_features": [15, 20], "min_samples_leaf": [100, 200],
-                       "max_depth": [10, 15, 20]},
+                       "max_depth": [10, 20]},
     "m6_base_nobear": {"max_features": [15, 20], "min_samples_leaf": [100, 200],
-                       "max_depth": [10, 15, 20]},
+                       "max_depth": [10, 20]},
     # v3 家族：518 欄。depth 這次才第一次有對照 —— norf 那 7 組全部固定在 30
     "m3_v3_up20":     {"max_features": [15, 20], "min_samples_leaf": [200, 400],
                        "max_depth": [15, 30]},

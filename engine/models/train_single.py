@@ -169,13 +169,13 @@ RF_CONFIG = dict(
     min_samples_leaf=150,
     max_features="sqrt",
     class_weight=None,
-    # n_jobs=6（2026-08-23 使用者指定）：模型一個一個訓練，不做外層並行，
-    # 所以內層可以吃滿。原本是 4，註解寫「避免與外層並行相乘把記憶體榨乾」——
+    # n_jobs=8（2026-08-23 使用者指定）：模型一個一個訓練，不做外層並行，
+    # 所以內層可以吃滿。原本是 4（後來 6），註解寫「避免與外層並行相乘把記憶體榨乾」——
     # 那是舊委員會時代多模型同時跑的遺留。
     # 記憶體不是限制：sklearn 的 RandomForest 用 threading backend，n_jobs 之間
     # 共用同一份 X 矩陣不複製（v3 訓練集約 1.7M 列 × 518 欄 float32 ≈ 3.5 GB，
     # 機器 24 GB）。真的不夠時才調降。
-    n_jobs=6,
+    n_jobs=8,
     random_state=42,
 )
 
