@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 from engine.paths import DATA_DIR
-from engine.models.train_single import current_round, eval_splits
+from engine.models.train_single import current_round
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +77,14 @@ def best_config(family: str, config_round: int | None = None,
 
     df = pd.read_csv(path)
     row = df.sort_values("val_sel_auc", ascending=False).iloc[0]
+    # 印出 CSV 裡**實際存在**的 AUC 欄，不要用 eval_splits() 去猜 ——
+    # 調參自 2026-08-23 起只評估 val_sel，CSV 沒有 test_auc / test2_auc 了。
+    # 舊版寫死跑 eval_splits()，在這行純粹是給人看的 log 上 KeyError 中止，
+    # 而選組態的邏輯（上一行的 sort_values）其實完全正常。
+    auc_cols = [c for c in df.columns if c.endswith("_auc")]
     logger.info(
         f"{family}：{len(df)} 組中選 "
-        + " ".join(f"{s}={row[f'{s}_auc']:.4f}" for s in eval_splits() if s != "val_es")
+        + " ".join(f"{c[:-4]}={row[c]:.4f}" for c in auc_cols)
     )
 
     params = {}
