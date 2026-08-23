@@ -39,11 +39,16 @@ val_sel 曲線挑定，不是自動算的。
 靠改程式解決。base 與 nomkt 的三個（344/332）不受影響。
 詳見 `doc/EXPERIMENT_STATUS.md`。
 
-⚠️ **`engine/models/config/` 底下兩個檔是版控產物，不可刪**：
-`sweep_round4_rf.csv`（m1/m2/m6 的組態來源）。同層的 `drop_volatility.txt`
-目前沒有模型在用（m5/m10 已砍），保留是為了之後想復原那兩個時不必重挑。
-它們跟 `CHOSEN_THRESHOLDS` 一樣是人挑出來的、程式推導不出來。放在 `data/` 就會
-被 .gitignore 擋掉，clone 下來直接重建不出模型（2026-08-22 驗收時抓到）。
+⚠️ **每個模型各自調參，不得共用組態。** 每一個選定的模型都要用**自己的特徵集、
+自己的 label** 跑一輪超參數搜尋，讀自己那份 `data/sweep_{key}_rf.csv`。即使兩個
+模型的特徵集相同、只差 label，也各搜各的 —— label 換了，最佳組態就不保證一樣，
+沿用等於拿別的問題調出來的參數。`train_label_variant.py` 不傳 `--config-round`
+就會走這條路；`--config-round` 只保留給讀取既有歷史檔案用。
+
+⚠️ **`engine/models/config/drop_volatility.txt` 是版控產物**（人工挑定的 16 欄
+波動度家族，程式推導不出來）。目前沒有模型在用（m5/m10 已砍），保留是為了之後
+想復原那兩個時不必重挑。同層的 `sweep_round4_rf.csv` 是舊式共用組態的歷史檔案，
+依上面的規定**不再用於訓練新模型**。
 
 重建路徑：`make bootstrap` → `make rebuild-full` → `make train` → `make curve`
 （人挑門檻）→ `make backtest` → 寫 `doc/BACKTEST_LOG.md`。

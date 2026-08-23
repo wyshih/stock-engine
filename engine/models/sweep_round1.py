@@ -42,6 +42,7 @@ import pandas as pd
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 
 
+from engine.models.train_label_variant import load_with_label  # noqa: E402
 from engine.models.train_single import (  # noqa: E402
     DATA_DIR,
     LABEL,
@@ -96,11 +97,13 @@ FOREST_FIXED_PARAMS_R2 = {"class_weight": None}
 # 27 組 = 3 × 3 × 3。Round 2 最佳解的 max_features 與 min_samples_leaf 都卡在舊
 # 範圍的邊界，所以往外延伸；max_depth 的最佳值 30 是內部點，這次在其兩側加點確認。
 #
-# ⚠️ 搜尋階段 n_estimators=150（不是正式的 300）：樹數主要影響變異不影響偏誤，
-# 150 棵的**組態排名**與 300 棵幾乎一致，但快一倍。使用者要求樹數也要試
-# 150/300/450 —— 全交叉會變成 81 組、約 200 小時，所以拆成兩階段：
-#   第一階段（本空間）樹數固定 150，掃 27 組找出最佳的 mf/leaf/depth
-#   第二階段 取前幾名，只對它們試 300 / 450
+# ⚠️ **搜尋與正式訓練用同一個樹數（300），不分兩階段**（2026-08-23 使用者指定）。
+# 舊做法是「第一階段固定 150 掃組態、第二階段取前幾名再試 300/450」，理由是樹數
+# 主要影響變異不影響偏誤、150 棵的組態排名與 300 幾乎一致。問題有兩個：
+#   1. 第二階段從來沒跑過 —— 正式模型一直是 150 棵，也就是**用篩選階段的暫定值
+#      當成最終組態**，而那個值當初只是為了加速。
+#   2. 「排名會轉移」是假設不是事實。搜尋與訓練用同一個樹數就不需要這個假設。
+# 代價是搜尋慢一倍，換掉的是一個沒被驗證的前提。
 # ── Round 5：v3 系列專用（2026-08-16）───────────────────────────────────────
 # v3 有 509 欄，Round 4 選出的 max_features=20 是從 344 欄裡選的（5.8%），
 # 直接沿用等於採樣比例砍三分之一。等比例放大後約 30，故往 20~60 搜。
@@ -111,14 +114,14 @@ FOREST_SPACE_R5 = {
     "min_samples_leaf": [200, 400],
     "max_depth": [30],
 }
-FOREST_FIXED_PARAMS_R5 = {"class_weight": None, "n_estimators": 150}
+FOREST_FIXED_PARAMS_R5 = {"class_weight": None}   # n_estimators 走 FOREST_FIXED 的 300
 
 FOREST_SPACE_R4 = {
     "max_features": [10, 15, 20],
     "min_samples_leaf": [200, 400, 500],
     "max_depth": [15, 30, 45],
 }
-FOREST_FIXED_PARAMS_R4 = {"class_weight": None, "n_estimators": 150}
+FOREST_FIXED_PARAMS_R4 = {"class_weight": None}   # n_estimators 走 FOREST_FIXED 的 300
 
 # n_jobs=6：Round 2 的訓練集是 Round 1 的 3 倍，單組要近一小時。內層吃 6 核、
 # 外層 --jobs 1 一次跑一組，比「外層 4 組 × 內層 4 核 = 16 執行緒」好——機器只有
@@ -133,9 +136,9 @@ def suggest(trial: optuna.Trial, space: dict) -> dict:
 
 
 def _fit_forest(cls, params, x_train, y_train, *_):
-    # params 覆寫 FOREST_FIXED：Round 4 的搜尋階段要把 n_estimators 降到 150 加速，
-    # 直接展開兩個 dict 會因為 key 重複而 TypeError。
-    # Round 1/2/3 的 params 從不含這些 key，行為與先前完全相同。
+    # params 覆寫 FOREST_FIXED。現行組態不再覆寫 n_estimators（搜尋與訓練都用
+    # 300），但保留這個覆寫機制 —— 讀既有的歷史 sweep CSV 時，裡面那欄
+    # n_estimators=150 仍需要能生效，否則重現不了當初的模型。
     model = cls(**{**FOREST_FIXED, **params}).fit(x_train, y_train)
     return (lambda x: model.predict_proba(x)[:, 1]), model
 
@@ -201,8 +204,10 @@ def build_predictor(model_name: str, params: dict, data: dict):
 
 
 def prepare(features_path: Path, intersect_with: Path | None,
-            drop_prefixes: tuple[str, ...] = (), drop_cols: tuple[str, ...] = ()) -> dict:
-    df, cols = load_data(features_path)
+            drop_prefixes: tuple[str, ...] = (), drop_cols: tuple[str, ...] = (),
+            label_file: Path | None = None, label_col: str = LABEL) -> dict:
+    df, cols = (load_data(features_path) if label_col == LABEL
+                else load_with_label(features_path, label_file, label_col))
     if intersect_with:
         shared = selected_columns(intersect_with)
         cols = [c for c in cols if c in shared]
@@ -214,7 +219,7 @@ def prepare(features_path: Path, intersect_with: Path | None,
     logger.info(f"特徵 {len(cols)} 欄")
 
     frames = {name: split_frame(df, name) for name in splits()}
-    frames = {k: v[v[LABEL].notna()] for k, v in frames.items()}
+    frames = {k: v[v[label_col].notna()] for k, v in frames.items()}
     train = frames["train"]
     others = {k: v for k, v in frames.items() if k != "train"}
     x_train, x_others = preprocess(train, others, cols)
@@ -222,9 +227,9 @@ def prepare(features_path: Path, intersect_with: Path | None,
     return {
         "cols": cols,
         "x_train": x_train,
-        "y_train": train[LABEL].to_numpy(dtype=np.int8),
+        "y_train": train[label_col].to_numpy(dtype=np.int8),
         "x": x_others,
-        "y": {k: v[LABEL].to_numpy(dtype=np.int8) for k, v in others.items()},
+        "y": {k: v[label_col].to_numpy(dtype=np.int8) for k, v in others.items()},
         # LambdaRank 的 group：每個交易日全市場一組，要跟列的排序一致
         "groups_train": train.groupby("date").size().to_numpy(),
         "groups_es": others["val_es"].groupby("date").size().to_numpy(),
@@ -330,6 +335,14 @@ def main() -> None:
     parser.add_argument("--intersect-with")
     parser.add_argument("--drop-prefix", action="append", default=[])
     parser.add_argument("--drop-file", default=None)
+    parser.add_argument("--label-file", default=None,
+                        help="label 檔（預設 labels.parquet 的 label_up20）")
+    parser.add_argument("--label-col", default=LABEL,
+                        help="label 欄名。⚠️ 每個模型必須用**自己的** label 調參，"
+                             "不可以拿別的 label 搜出來的組態套過來")
+    parser.add_argument("--key", default=None,
+                        help="模型代號。給了就寫 sweep_{key}_{model}.csv —— "
+                             "每個模型一份，不共用")
     parser.add_argument("--jobs", type=int, default=1,
                         help="同時訓練幾個 trial（內層 n_jobs 固定 4，jobs×4 勿超過核心數）")
     add_round_arg(parser)
@@ -340,8 +353,10 @@ def main() -> None:
     data = prepare(
         Path(args.features), Path(args.intersect_with) if args.intersect_with else None,
         tuple(args.drop_prefix), drop_cols,
+        Path(args.label_file) if args.label_file else None, args.label_col,
     )
-    out_path = DATA_DIR / f"sweep_round{args.round}_{args.model}.csv"
+    out_path = (DATA_DIR / f"sweep_{args.key}_{args.model}.csv" if args.key
+                else DATA_DIR / f"sweep_round{args.round}_{args.model}.csv")
     results = run_sweep(args.model, data, out_path, jobs=args.jobs)
 
     print(f"\n=== {args.model}：依 val_sel AUC 排序前 10 ===")

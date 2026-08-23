@@ -54,7 +54,11 @@ logger = logging.getLogger(__name__)
 # 預設 Round 4（train 2020-01~2023-11 / val 2024 / test 2025-02~2026-07）。
 # 2026-08-15 使用者要求「全部模型都要用 round4」，原本是 Round 2。
 DEFAULT_SPLIT_ROUND = 4
-DEFAULT_CONFIG_ROUND = 4   # 超參數來源，預設與切分同一輪
+# 超參數來源預設為 None＝讀該模型自己的 sweep_{key}_rf.csv。
+# 規定：每個模型各自調參，不得共用組態（見 sweep_config.py 的說明）。
+# 傳 --config-round N 會改走舊式的共用檔 sweep_round{N}_rf.csv，只供讀取
+# 既有歷史檔案，新模型不得使用。
+DEFAULT_CONFIG_ROUND = None
 CURVE_SPLIT = "val_sel"
 
 
@@ -122,7 +126,7 @@ def main() -> None:
     parser.add_argument("--round", type=int, default=DEFAULT_SPLIT_ROUND,
                         help="用哪一套切分")
     parser.add_argument("--config-round", type=int, default=DEFAULT_CONFIG_ROUND,
-                        help="超參數讀哪一輪的 sweep CSV")
+                        help="舊式：整輪共用的 sweep CSV。不給就讀本模型自己那份")
     parser.add_argument("--drop-prefix", action="append", default=[],
                         help="剔除此前綴的所有特徵，可重複（例：--drop-prefix mkt_）")
     parser.add_argument("--drop-file", default=None,
@@ -130,9 +134,13 @@ def main() -> None:
     args = parser.parse_args()
 
     use_round(args.round)
-    params = best_config("rf", args.config_round)
-    logger.info(f"[{args.key}] Round {args.round} 切分，"
-                f"超參數沿用 Round {args.config_round} 最佳組：{params}")
+    # 每個模型讀自己那份 sweep_{key}_rf.csv（規定：不得共用組態）。
+    # --config-round 只在明確指定時才走舊式共用路徑，供讀取歷史檔案用。
+    params = (best_config("rf", key=args.key) if args.config_round is None
+              else best_config("rf", args.config_round))
+    source = (f"本模型自己的 sweep_{args.key}_rf.csv" if args.config_round is None
+              else f"⚠️ 共用的 Round {args.config_round} 組態")
+    logger.info(f"[{args.key}] Round {args.round} 切分，超參數來自{source}：{params}")
 
     drop_cols = tuple(Path(args.drop_file).read_text().split()) if args.drop_file else ()
     data = load_with_label(Path(args.features), Path(args.label_file), args.label_col,
