@@ -119,9 +119,16 @@ sweep() {   # $1=key $2=特徵檔 $3=label檔 $4=label欄 $5=說明 $6...=剔除
     local key=$1 feats=$2 lfile=$3 lcol=$4 desc=$5; shift 5
     step "調參 ${key}  ${desc}"
     local out="data/sweep_${key}_rf.csv"
+    # 每個模型的組數不同（base 家族 12、v3 家族 8），所以問程式而不是寫死數字
+    local want
+    want=$($PY -c "
+from engine.models.sweep_round1 import search_space
+import math
+space, _ = search_space('rf', 4, '$key')
+print(math.prod(len(v) for v in space.values()))" 2>/dev/null)
     if [ -f "$out" ] && \
-       [ "$($PY -c "import pandas;print(len(pandas.read_csv('$out')))" 2>/dev/null)" = "8" ]; then
-        echo "  ⏭  已完成 8 組，跳過"
+       [ "$($PY -c "import pandas;print(len(pandas.read_csv('$out')))" 2>/dev/null)" = "$want" ]; then
+        echo "  ⏭  已完成 ${want} 組，跳過"
     else
         $PY -m engine.models.sweep_round1 --model rf --round 5 --key "$key" \
             --features "$feats" --label-file "$lfile" --label-col "$lcol" "$@" \

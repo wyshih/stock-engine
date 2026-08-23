@@ -42,7 +42,6 @@ import pandas as pd
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 
 
-from engine.models.train_label_variant import load_with_label  # noqa: E402
 from engine.models.train_single import (  # noqa: E402
     DATA_DIR,
     LABEL,
@@ -206,8 +205,13 @@ def build_predictor(model_name: str, params: dict, data: dict):
 def prepare(features_path: Path, intersect_with: Path | None,
             drop_prefixes: tuple[str, ...] = (), drop_cols: tuple[str, ...] = (),
             label_file: Path | None = None, label_col: str = LABEL) -> dict:
-    df, cols = (load_data(features_path) if label_col == LABEL
-                else load_with_label(features_path, label_file, label_col))
+    if label_col == LABEL:
+        df, cols = load_data(features_path)
+    else:
+        # 延遲 import：train_label_variant 也 import 本模組（build_fitted），
+        # 放在檔頭會變成循環 import。
+        from engine.models.train_label_variant import load_with_label
+        df, cols = load_with_label(features_path, label_file, label_col)
     if intersect_with:
         shared = selected_columns(intersect_with)
         cols = [c for c in cols if c in shared]
@@ -236,8 +240,49 @@ def prepare(features_path: Path, intersect_with: Path | None,
     }
 
 
-def search_space(model_name: str, round_no: int) -> tuple[dict, dict]:
-    """回傳 (要搜的空間, 固定但仍寫進 CSV 的參數)。"""
+# ── 每個模型自己的搜尋空間（2026-08-23 使用者逐個確認）─────────────────────
+# 規定：每個模型各自調參，不得共用組態。空間以 norf 舊 repo 的最佳解為中心
+# 往外給格子 —— 那些最佳解是從封存 bundle 直接讀出來的：
+#     m1 / m2 / m6（base 家族）  max_features=20, min_samples_leaf=200, max_depth=15
+#     m3 / m8（v3 家族）         max_features=20, min_samples_leaf=400, max_depth=30
+#
+# ⚠️ `leaf=100` 與 `depth=10` 都在 norf 搜過的範圍之外（norf 的 leaf 是
+#    200/400/500、depth 是 15/30/45），是刻意往下探。若最佳解落在這兩個邊界上，
+#    代表真正的最佳值可能更小，要再往下搜一輪 —— 別直接當成收斂了。
+#
+# 空間相同不代表結果會相同：m1/m2/m6 三者格子一樣，但各自用自己的特徵集與
+# label 搜，選出來的組態很可能不同。這正是「不得共用組態」的意義。
+MODEL_SPACES = {
+    # base 家族：344 / 332 欄，label_up20 與 label_nobear
+    "m1_base_up20":   {"max_features": [15, 20], "min_samples_leaf": [100, 200],
+                       "max_depth": [10, 15, 20]},
+    "m2_nomkt_up20":  {"max_features": [15, 20], "min_samples_leaf": [100, 200],
+                       "max_depth": [10, 15, 20]},
+    "m6_base_nobear": {"max_features": [15, 20], "min_samples_leaf": [100, 200],
+                       "max_depth": [10, 15, 20]},
+    # v3 家族：518 欄。depth 這次才第一次有對照 —— norf 那 7 組全部固定在 30
+    "m3_v3_up20":     {"max_features": [15, 20], "min_samples_leaf": [200, 400],
+                       "max_depth": [15, 30]},
+    "m8_v3_nobear":   {"max_features": [15, 20], "min_samples_leaf": [200, 400],
+                       "max_depth": [15, 30]},
+}
+# 搜尋與正式訓練同樹數，且不再覆寫 n_estimators（走 FOREST_FIXED 的 300）
+MODEL_FIXED_PARAMS = {"class_weight": None}
+
+
+def search_space(model_name: str, round_no: int, key: str | None = None) -> tuple[dict, dict]:
+    """回傳 (要搜的空間, 固定但仍寫進 CSV 的參數)。
+
+    給了 `key` 就用該模型自己的空間（現行的唯一正路）；沒給則走舊的
+    「整輪共用一份」路徑，只保留給重現既有歷史結果用。
+    """
+    if key:
+        if key not in MODEL_SPACES:
+            raise ValueError(
+                f"{key} 沒有定義搜尋空間。每個模型都必須有自己的一份 —— "
+                f"請在 MODEL_SPACES 補上，不要沿用別的模型的。"
+                f"目前有：{', '.join(MODEL_SPACES)}")
+        return dict(MODEL_SPACES[key]), dict(MODEL_FIXED_PARAMS)
     if round_no == 2:
         if model_name != "rf":
             raise ValueError(f"Round 2 的表格模型只留 rf，不支援 {model_name}")
@@ -275,8 +320,9 @@ def load_done(out_path: Path, space: dict) -> tuple[list[dict], dict[tuple, floa
     return records, done
 
 
-def run_sweep(model_name: str, data: dict, out_path: Path, jobs: int = 1) -> pd.DataFrame:
-    space, fixed = search_space(model_name, current_round())
+def run_sweep(model_name: str, data: dict, out_path: Path, jobs: int = 1,
+              key: str | None = None) -> pd.DataFrame:
+    space, fixed = search_space(model_name, current_round(), key)
 
     grid = model_name in ("rf", "extratrees")
     sampler = (
@@ -357,7 +403,7 @@ def main() -> None:
     )
     out_path = (DATA_DIR / f"sweep_{args.key}_{args.model}.csv" if args.key
                 else DATA_DIR / f"sweep_round{args.round}_{args.model}.csv")
-    results = run_sweep(args.model, data, out_path, jobs=args.jobs)
+    results = run_sweep(args.model, data, out_path, jobs=args.jobs, key=args.key)
 
     print(f"\n=== {args.model}：依 val_sel AUC 排序前 10 ===")
     top = results.sort_values("val_sel_auc", ascending=False).head(10)
