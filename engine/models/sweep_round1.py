@@ -225,13 +225,22 @@ def sweep_eval_splits() -> tuple[str, ...]:
 def prepare(features_path: Path, intersect_with: Path | None,
             drop_prefixes: tuple[str, ...] = (), drop_cols: tuple[str, ...] = (),
             label_file: Path | None = None, label_col: str = LABEL) -> dict:
-    if label_col == LABEL:
-        df, cols = load_data(features_path)
-    else:
-        # 延遲 import：train_label_variant 也 import 本模組（build_fitted），
-        # 放在檔頭會變成循環 import。
-        from engine.models.train_label_variant import load_with_label
-        df, cols = load_with_label(features_path, label_file, label_col)
+    df, cols = load_data(features_path)
+    if label_col != LABEL:
+        # 自己合併 label，不重用 train_label_variant.load_with_label ——
+        # 那支回傳的是「讀檔＋合併＋切分＋前處理」做完的整包 dict，跟這裡需要的
+        # (df, cols) 不是同一層抽象（2026-08-23 踩過：解包失敗，而且要等到第一個
+        # 非預設 label 的模型 m6 才炸，前面 12 組全正常，掩蓋了三小時）。
+        # 它還會強制載入 val_es 與 test —— 正是我們刻意砍掉的東西。
+        if label_col in df.columns:
+            logger.info(f"label `{label_col}` 已在特徵表中，不重複合併")
+        else:
+            lab = pd.read_parquet(label_file, columns=["date", "stock_id", label_col])
+            lab["date"] = pd.to_datetime(lab["date"])
+            df = df.merge(lab, on=["date", "stock_id"], how="left")
+        n_valid = int(df[label_col].notna().sum())
+        logger.info(f"label `{label_col}`：有效 {n_valid:,} 列（{n_valid / len(df):.1%}），"
+                    f"基準率 {df[label_col].mean():.4f}")
     if intersect_with:
         shared = selected_columns(intersect_with)
         cols = [c for c in cols if c in shared]
