@@ -1,0 +1,56 @@
+<html>
+<link href="../../../../css/report.css" rel="stylesheet" type="text/css">
+<link href="../../../../css/gretai.css" rel="stylesheet" type="text/css">
+<Title>History Report</Title>
+<head>
+<SCRIPT language=JavaScript src="../../../../js/checkdate.js"></SCRIPT>
+<SCRIPT language=JavaScript src="../../../../js/report.js"></SCRIPT>
+<script language="JavaScript">
+ID="RSTA3103";
+DATE_AFTER=920801;
+LANG = "C";
+
+    function ChkInput() {
+      var SOURCE_FILE="";
+      var inputDATE = document.report.input_date.value.split("/");
+      var QDATE = inputDATE[0]+""+leftPad(inputDATE[1],2)+""+leftPad(inputDATE[2],2);
+      SOURCE_FILE = ID + "_" + QDATE + ".HTML";      
+      if(!fileExists(SOURCE_FILE)){
+      	window.open("../../../nodata.htm","BOT");
+      }else{  
+      	window.open(SOURCE_FILE,"BOT");
+      }
+      return true;
+    }
+
+
+</script>
+</head>
+<body>
+<form name="report" onSubmit="ChkInput();return false;">
+<table width="100%" border="0" cellspacing="0" cellpadding="0">
+   <tr>
+      <td>
+      <table width="100%" border="0" cellspacing="0" cellpadding="2">
+      <tr>
+         <td colspan="2" height="25" class="search-in01" align="center">ï¿½Wï¿½dï¿½Ñ²ï¿½ï¿½ÓªÑ¥ï¿½ï¿½qï¿½ï¿½Bï¿½Ñ§Qï¿½vï¿½Bï¿½Ñ»ï¿½ï¿½bï¿½È¤ï¿½</td>
+      </tr>
+      <tr>                      
+         <td height="25" class="search-in02">&nbsp;</td>
+         <td align="right" class="search-in02"> ï¿½Ð¿ï¿½Ü¡G ï¿½ï¿½Æ¤ï¿½ï¿½ï¿½G
+            <input name="input_date" class="input01"  maxlength="10" onkeypress="return KeyinDate(this)" value="95/12/29">           
+            <a href="#"><img src="../../../../ch/images/date_icon.gif" alt="¿ï¾Ü¤é´Á" width="19" height="19" border="0" align="absmiddle" onclick="OpenCalendarWindow('','','')" onkeypress="OpenCalendarWindow('','','')"></a>
+            <input type="submit" class="input01" value="¬d¸ß" />   
+         </td>
+      </tr>
+      <tr>
+	 <td colspan="2" align="right" height="25" class="search-in01">ï¿½ï¿½ï¿½ï¿½&nbsp;&nbsp;&nbsp;ï¿½ï¿½ï¿½{ï¿½ï¿½ï¿½Ø«eï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½92ï¿½~8ï¿½ï¿½ï¿½ï¿½Hï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½vï¿½ï¿½Æ¥Hï¿½Ñ¬dï¿½ï¿½ </td>         
+      </tr>
+      </table>
+      </td>
+   </tr>
+</table>
+</form>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f57a60e9c6a9a9',t:'MTc4NzQzOTQ2Mg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
+ 

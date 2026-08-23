@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<link id="icon" rel="shortcut icon" sizes="any" href="/mops/assets/icon.png">
+		<!-- Google tag (gtag.js) -->
+		<script async src="https://www.googletagmanager.com/gtag/js?id=G-EJ69TXS89Q"></script>
+		<title>公開資訊觀測站</title>
+		<script type="module" crossorigin src="/mops/assets/index.js"></script>
+		<link rel="stylesheet" crossorigin href="/mops/assets/index.css">
+	</head>
+	<body>
+		<div id="app"></div>
+		<script>
+			window.dataLayer = window.dataLayer || [];
+
+			function gtag(arguments) {
+				dataLayer.push(arguments);
+			};
+
+			gtag('js', new Date());
+			
+			if(location.href.match("mopsplus.twse")){
+				gtag('config', 'G-EJ69TXS89Q');
+			};
+
+			if(location.href.match("mops.twe")){
+				gtag('config', 'G-EJ69TXS89Q');
+			};
+			
+		</script>
+	</body>
+</html>

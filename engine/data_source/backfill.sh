@@ -26,7 +26,11 @@ RETRY_WAIT=${RETRY_WAIT:-120}        # 每次重試前等幾秒
 
 MODULE=$1; START=$2; END=$3; shift 3
 MARK_DIR=logs/.backfill
-MARK="$MARK_DIR/$(echo "$MODULE" | tr '.' '_').done"
+# 標記檔以「模組 + BACKFILL_TAG」命名。加 tag 是因為同一支模組可能被拆成
+# 多個 lane 併行跑（例如行情的 --market twse 與 --market tpex 是兩個 lane），
+# 只用模組名的話兩個 lane 會共用同一份標記，互相把對方的段當成已完成而跳過
+# —— 那是靜默資料缺漏，比報錯還難查。
+MARK="$MARK_DIR/$(echo "$MODULE" | tr '.' '_')${BACKFILL_TAG:+_$BACKFILL_TAG}.done"
 mkdir -p "$MARK_DIR"; touch "$MARK"
 
 # 產生月段：[起日, 迄日] → 一行一段 "YYYY-MM-DD YYYY-MM-DD"

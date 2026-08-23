@@ -12,6 +12,11 @@ TA-Lib==0.6.8
 
 # 資料來源
 requests==2.32.3
+# pandas.read_html 的後端 —— fetch_revenue 解析 MOPS 的 HTML 表格要用。
+# 這是 pandas 的「optional dependency」，缺了不會在 import 時報錯，是跑到
+# read_html 那一行才丟 ImportError，所以 AST 相依掃描也掃不出來
+# （2026-08-22 靠實跑月營收才發現）。舊 repo 的 requirements 同樣漏列。
+lxml==4.9.4
 # FinMind 套件本身沒用到 —— fetch_stock_list 是直接打 FinMind 的 REST
 # 端點（requests），只需要 FINMIND_TOKEN 環境變數，見 .env.example
 exchange-calendars==4.5.6

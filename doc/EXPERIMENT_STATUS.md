@@ -121,6 +121,74 @@ byte-identical（已 `cmp` 驗過）。真正的原因是 v3 的「sz / raw 變�
 **怎麼確認自己踩到這件事**：`make verify-vs-old` 會印出上面那張對照表，v3 三組
 標 📌（已知差異，不判 FAIL），base 兩組若也漂移則是真的有問題，要查。
 
+## 2026-08-23 從零重建：三個漏列的相依與抓取節流的教訓
+
+第一次真正「從乾淨環境重建」，抓出舊 repo 一直沒被發現的問題。
+
+### 舊 repo 的 requirements.txt 漏列三個套件
+
+| 套件 | 誰要用 | 為什麼一直沒被發現 |
+|---|---|---|
+| `optuna` | `sweep_round1.py` | 只裝在當時那個 venv 裡。乾淨環境會在 `make train` 的調參階段才炸 |
+| `plotly` | `frontend/technical_chart.py` | 同上。技術面分析頁一開就死 |
+| `lxml` | `fetch_revenue.py` 的 `pandas.read_html` | 是 pandas 的 **optional dependency**，缺了不會在 import 時報錯，要跑到那一行才丟 ImportError —— 連 AST 相依掃描都掃不出來 |
+
+三個都已補進 `requirements.txt` 並註明原因。
+
+### 抓取的併發規則：依主機，不依資料源
+
+把 bootstrap 按「資料源」切成五組併行，其中四組打的都是 `www.twse.com.tw`，
+等效間隔被壓到 1 秒以下：
+
+- 單執行緒 3 秒間隔：8 小時 33 次瞬時失敗，全部自癒
+- 五組併行：**15 分鐘 48 次失敗**，出現 502 與 HTML 錯誤頁，最後被 WAF 擋成
+  307（回 784 bytes 的「因為安全性考量，您所執行的頁面無法呈現」）
+
+封鎖的形狀值得記：**只有最近三天的日期還回 200，其餘全 307** —— 近期日期在
+邊緣快取拿得到，需要回源的歷史日期一律被擋。停止所有請求後約 1 分鐘解除。
+
+同日的官方 API 調查也實測到：以 2~3 秒間隔打 `twse.com.tw` 約 6 個請求就會被擋；
+**TPEx 側則完全沒有節流**。
+
+結論寫進 Makefile 的兩條鐵則：
+1. 同一台主機只能有一條連線
+2. 寫同一個 parquet 的不能同時跑
+
+### 行情回補慢一倍，是因為沿用了 `--market both`
+
+`fetch_price_official.py` 預設 `--market both` 會在**同一個行程裡**先打 TWSE、
+sleep 3 秒、再打 TPEx、sleep 3 秒 —— 每天 8 秒。但那是兩台互不相干的主機。
+
+舊 repo 的做法（`logs/backfill_twse.log` 與 `backfill_tpex.log` 第一行時間戳同一秒
+可以證實）是兩個行程並行、各自寫獨立檔案，再合併：
+
+```
+--market twse --out price_official_twse   1h55m（3.0s/天）
+--market tpex --out price_official_tpex   2h27m（4.0s/天）
+合併驗算：1,844,981 + 1,496,899 + TWII 1,854 = 3,343,734 ✔
+```
+
+並行後 2h27m，序列則要 4h22m。本次第一輪用了預設值，白花約 2 小時。
+現行 Makefile 已改成分開抓，合併步驟補成 `merge_price_sources.py`
+（舊 repo 這步是手動做的、沒留下程式，跟 `promote_price` 當初的情況一樣）。
+
+### 官方 API 調查結論：沒有更省的抓法
+
+TWSE OpenAPI 130+ 個端點、TPEx 225 個，**沒有一個帶日期參數**，全是當期快照；
+`data.gov.tw` 只是 OpenAPI 的目錄殼，沒有歷史包；唯一整段下載在付費 E-Shop 且
+是 tick 檔。唯一的「多天」端點是個股×月（`STOCK_DAY` / `tradingStock`），
+換過去要 144,000 個請求 vs 現在的 3,988，**貴 36 倍**（損益平衡點約 25 檔）。
+
+**逐日抓 1,994 天已經是請求數最少的做法**，慢是端點形狀決定的，不是實作問題。
+
+附帶發現：上櫃的本益比／殖利率／淨值比有官方來源
+（`tpex.org.tw/www/zh-tw/afterTrading/peQryDate`，涵蓋 2007 起，實測回 812 檔），
+可以補掉 `fundamental` 目前上櫃整欄 NaN 的缺口，代價是 +1,994 個請求。尚未實作。
+
+⚠️ 另一個坑：舊 TPEx 路徑 `web/stock/aftertrading/…` **會忽略日期參數、無條件回
+最新交易日，而且回 200 不是錯誤**。任何還在用舊路徑做歷史回補的程式，會把今天的
+快照重複寫進每一個日期。本專案已改用 `www/zh-tw/afterTrading/otc`，不受影響。
+
 ## 已知的方法論陷阱（踩過的坑）
 
 - **固定百分比門檻會製造波動度偏誤**：P(未來20日最大漲幅>7%) 從最低波動組 20.9%

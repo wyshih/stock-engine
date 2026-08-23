@@ -153,25 +153,74 @@ update: data revenue promote validate features labels scores  ## 日常增量更
 	@echo ""
 
 # ── 全量重建 ────────────────────────────────────────────────────────────
-bootstrap:  ## 從 $(BOOTSTRAP_FROM) 起全量抓取（10~15 小時）
-	@# 逐交易日打官方端點跑 3.5 小時以上，中途遇到網路瞬斷是常態。各 fetcher 的
-	@# 重試只有 3 次（約 15 秒），撐不過去 —— 所以長爬取一律走 backfill.sh，
-	@# 它會從資料檔的最後一天接著跑（upsert，重疊無害）。
-	@# 2026-08-22 踩過：第 33/1994 天 tpex DNS 瞬斷，整條 bootstrap 作廢。
+bootstrap:  ## 從 $(BOOTSTRAP_FROM) 起全量抓取（依主機分流 + 兩階段，約 3~4 小時）
+	@# ── 為什麼慢 ────────────────────────────────────────────────────────
+	@# 官方端點（TWSE MI_INDEX / T86 / BWIBBU_d、TPEx otc）都只回「某一天的
+	@# 全市場快照」，沒有任何 startDate/endDate 參數，所以是一天一個請求 ×
+	@# 1,994 個交易日。2026-08-23 查過官方 API：TWSE OpenAPI 130+ 個端點、
+	@# TPEx 225 個，**沒有一個帶日期參數**；data.gov.tw 只是 OpenAPI 的目錄殼，
+	@# 沒有歷史包；唯一整段下載在付費 E-Shop 且是 tick 檔。唯一的「多天」端點
+	@# 是個股×月（STOCK_DAY / tradingStock），換過去要 144,000 個請求，比現在
+	@# 的 3,988 貴 36 倍。**現在的做法已經是請求數最少的那個**。
+	@#
+	@# ── 併行的兩條鐵則 ──────────────────────────────────────────────────
+	@# 1. **同一台主機只能有一條連線。** 2026-08-23 踩過：按資料源切成五組，
+	@#    其中四組打 www.twse.com.tw，等效間隔壓到 1 秒以下 —— 15 分鐘失敗 48 次
+	@#    （單執行緒時是 8 小時 33 次），出現 502 與 HTML 錯誤頁，最後被 WAF
+	@#    擋成 307（只有近三天的快取日期還回得了 200）。停止後約 1 分鐘解除。
+	@#    同日的 API 調查也實測到 2~3 秒間隔打 twse 約 6 個請求就會被擋；
+	@#    TPEx 側則完全沒有節流。
+	@# 2. **寫同一個 parquet 的不能同時跑。**
+	@#      price_official 與 --market index → price_official.parquet
+	@#      fetch_chip 與 fetch_chip_tpex     → chip.parquet
+	@#
+	@# 兩條鐵則合起來就是下面的兩階段：
+	@#   階段一  lane TWSE：上市行情 → 大盤 → 除權息 → 上市籌碼（序列，同主機）
+	@#           lane TPEx：上櫃行情（不同主機，與上面併行）
+	@#           lane MOPS：月營收（不同主機，全程併行）
+	@#   上市／上櫃行情分成兩個 lane 是跟舊 repo 學的：`logs/backfill_twse.log` 與
+	@#   `backfill_tpex.log` 的第一行時間戳同一秒，證實它當初就是並行跑的
+	@#   —— TWSE 1h55m（3.0s/天）、TPEx 2h27m（4.0s/天），並行後總計 2h27m。
+	@#   本專案 2026-08-23 第一次回補用了預設的 `--market both`（同一行程內先打
+	@#   TWSE 再打 TPEx，每天 8 秒），花了 4.4 小時 —— 整整慢一倍。
+	@#   分開抓會產生三個檔，最後由 merge_price_sources 合併回
+	@#   price_official.parquet（舊 repo 這步是手動做的、沒留下程式）。
+	@#   階段二  lane TWSE：財報          ⎫ 不同主機、不同輸出檔，
+	@#           lane TPEx：上櫃籌碼      ⎭ 可以併行
+	@#   上櫃籌碼排在階段二，是因為它與上市籌碼寫同一個 chip.parquet（鐵則 2），
+	@#   而不是因為主機衝突 —— 它打的是 tpex.org.tw。
+	@#
+	@# 中斷後直接重跑本 target：backfill.sh 的標記檔會讓已完成的段直接跳過。
 	$(PY) -m engine.data_source.fetch_stock_list
-	engine/data_source/backfill.sh engine.data_source.fetch_price_official $(BOOTSTRAP_FROM) $(TODAY)
-	$(PY) -m engine.data_source.fetch_price_official --start $(BOOTSTRAP_FROM) --end $(TODAY) --market index
-	$(PY) -m engine.data_source.fetch_exright   --first-year $(shell echo $(BOOTSTRAP_FROM) | cut -d- -f1)
-	engine/data_source/backfill.sh engine.data_source.fetch_chip        $(BOOTSTRAP_FROM) $(TODAY)
-	engine/data_source/backfill.sh engine.data_source.fetch_chip_tpex   $(BOOTSTRAP_FROM) $(TODAY)
-	engine/data_source/backfill.sh engine.data_source.fetch_fundamental $(BOOTSTRAP_FROM) $(TODAY)
-	$(PY) -m engine.data_source.fetch_revenue --bulk-start $(shell echo $(BOOTSTRAP_FROM) | cut -c1-7) --bulk-end $(REV_TO)
+	@set -m; \
+	$(PY) -m engine.data_source.fetch_revenue --bulk-start $(shell echo $(BOOTSTRAP_FROM) | cut -c1-7) --bulk-end $(REV_TO) \
+	  > logs/bs_revenue.log 2>&1 & pr=$$!; \
+	( BACKFILL_TAG=twse engine/data_source/backfill.sh engine.data_source.fetch_price_official $(BOOTSTRAP_FROM) $(TODAY) --market twse --out price_official_twse \
+	  && $(PY) -m engine.data_source.fetch_price_official --start $(BOOTSTRAP_FROM) --end $(TODAY) --market index --out price_official_index \
+	  && $(PY) -m engine.data_source.fetch_exright --first-year $(shell echo $(BOOTSTRAP_FROM) | cut -d- -f1) \
+	  && engine/data_source/backfill.sh engine.data_source.fetch_chip $(BOOTSTRAP_FROM) $(TODAY) \
+	) > logs/bs_twse.log 2>&1 & pt=$$!; \
+	BACKFILL_TAG=tpex engine/data_source/backfill.sh engine.data_source.fetch_price_official $(BOOTSTRAP_FROM) $(TODAY) --market tpex --out price_official_tpex \
+	  > logs/bs_tpex_price.log 2>&1 & pq=$$!; \
+	echo "  階段一　TWSE=$${pt} 上櫃行情=$${pq} 月營收=$${pr}"; \
+	if wait $${pt}; then echo "  ✓ 階段一 TWSE 完成（上市行情/大盤/除權息/上市籌碼）"; \
+	else echo "  ✗ 階段一 TWSE 失敗（見 logs/bs_twse.log）"; exit 1; fi; \
+	if wait $${pq}; then echo "  ✓ 階段一 上櫃行情完成"; \
+	else echo "  ✗ 上櫃行情失敗（見 logs/bs_tpex_price.log）"; exit 1; fi; \
+	$(PY) -m engine.data_source.merge_price_sources || exit 1; \
+	engine/data_source/backfill.sh engine.data_source.fetch_fundamental $(BOOTSTRAP_FROM) $(TODAY) \
+	  >> logs/bs_twse.log 2>&1 & pf=$$!; \
+	engine/data_source/backfill.sh engine.data_source.fetch_chip_tpex $(BOOTSTRAP_FROM) $(TODAY) \
+	  > logs/bs_tpex.log 2>&1 & pp=$$!; \
+	echo "  階段二　財報(TWSE)=$${pf}　上櫃籌碼(TPEx)=$${pp}　併行中"; \
+	rc=0; \
+	if wait $${pf}; then echo "  ✓ 財報完成"; else echo "  ✗ 財報失敗（見 logs/bs_twse.log）"; rc=1; fi; \
+	if wait $${pp}; then echo "  ✓ 上櫃籌碼完成"; else echo "  ✗ 上櫃籌碼失敗（見 logs/bs_tpex.log）"; rc=1; fi; \
+	if wait $${pr}; then echo "  ✓ 月營收完成"; else echo "  ✗ 月營收失敗（見 logs/bs_revenue.log）"; rc=1; fi; \
+	exit $$rc
 	@$(MAKE) promote
 	@$(MAKE) validate
 
-# builder 是 upsert 寫檔，--full 只覆蓋算得出來的列，舊資料獨有的組合會殘留
-# （2026-08-22 踩過：2026-07-10 那個假交易日的 1,948 列留在特徵裡）。
-# 所以全量重建前一定要先刪（CLAUDE.md 規則 5）。
 clean-derived:  ## 刪掉所有衍生檔（特徵 / label / 分數 / 曲線）
 	@echo "  即將刪除 data/ 底下的衍生檔（原始資料不動）"
 	@rm -fv data/{price,chip,fundamental,talib,swing,market,trendline,relative,revenue}_features.parquet
