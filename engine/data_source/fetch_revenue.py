@@ -8,8 +8,13 @@
   python fetch_revenue.py --date 2026-06-12                       # 每日模式（逐支股票）
   python fetch_revenue.py --bulk-start 2019-01 --bulk-end 2021-12 # 批次模式（整月一次取回）
 
-批次模式改用 MOPS 的整月彙總頁 t21sc03，一個月份只要 2 次請求（上市 + 上櫃）就能
-拿到全部公司，補歷史資料時比逐支股票快約 1000 倍（36 個月：2 分鐘 vs 57 小時）。
+批次模式改用 MOPS 的整月彙總頁 t21sc03，一個月份 4 次請求（上市/上櫃 × 國內/國外公司）
+就能拿到全部公司，補歷史資料時比逐支股票快約 500 倍。
+
+已知限制：MOPS 會用「現行公開發行公司名單」重新產生歷史彙總頁，已下市/合併消滅的
+公司會被從歷史檔案中移除（實測：2888 新光金在 2021-03 的檔案裡已不存在，同業 2891
+中信金則在）。因此批次模式只補得到現仍存在的公司，已下市個股的歷史營收需靠每日模式
+在當時抓下來的存量。
 """
 import io
 import logging
@@ -26,8 +31,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 MOPS_URL = "https://mopsov.twse.com.tw/mops/web/ajax_t05st10_ifrs"
-# 整月彙總頁：{market} 為 sii(上市) / otc(上櫃)，日期為民國年_月
-MOPS_BULK_URL = "https://mopsov.twse.com.tw/nas/t21/{market}/t21sc03_{roc_year}_{month}_0.html"
+# 整月彙總頁：{market} 為 sii(上市) / otc(上櫃)，日期為民國年_月，結尾 {suffix} 為公司別。
+# 資料來源：https://mopsov.twse.com.tw/nas/t21/{sii,otc}/t21sc03_<民國年>_<月>_<0|1>.html
+MOPS_BULK_URL = (
+    "https://mopsov.twse.com.tw/nas/t21/{market}/t21sc03_{roc_year}_{month}_{suffix}.html"
+)
+# MOPS 把同一個月的營收統計表拆成兩份檔案（CSV 下載鈕的說明：「檔案內容包含國內及國外公司」）：
+#   _0 = 國內公司、_1 = 國外公司（第一上市/上櫃的 -KY 公司與 -DR 存託憑證）。
+# 舊版只抓 _0，導致 121 檔仍在市交易的外國公司（120 檔 -KY + 9105 泰金寶-DR）
+# 完全沒有月營收。實測 2019-01~2026-07 兩個市場的 _1 檔皆存在（_2 為 404）。
+MOPS_BULK_SUFFIXES = ("0", "1")
 MOPS_INDEX = "https://mopsov.twse.com.tw/mops/web/index"
 HEADERS = {
     "User-Agent": (
@@ -186,11 +199,23 @@ def run(target_date: date, dry_run: bool = False) -> pd.DataFrame:
 BULK_INTERVAL = 3.0  # 秒；批次模式請求極少，仍保持禮貌間隔
 
 
+def bulk_url(market: str, roc_year: int, month: int, suffix: str = "0") -> str:
+    """組出整月彙總頁網址。抽成函式是為了讓 URL 契約可以被單元測試釘住。"""
+    return MOPS_BULK_URL.format(
+        market=market, roc_year=roc_year, month=month, suffix=suffix
+    )
+
+
 @retry(max_attempts=3, base_delay=10.0)
-def fetch_bulk_month(market: str, roc_year: int, month: int) -> pd.DataFrame:
-    """取回某市場某月的全部公司營收。回傳 stock_id / revenue 兩欄。"""
-    url = MOPS_BULK_URL.format(market=market, roc_year=roc_year, month=month)
+def fetch_bulk_month(market: str, roc_year: int, month: int,
+                     suffix: str = "0") -> pd.DataFrame:
+    """取回某市場某月某公司別的全部公司營收。回傳 stock_id / revenue 兩欄。"""
+    url = bulk_url(market, roc_year, month, suffix)
     resp = requests.get(url, headers=HEADERS, timeout=60)
+    # 404 代表該月該公司別沒有檔案（例如更早年份沒有外國公司），視為空結果，
+    # 不要讓 retry 白白重試三次。
+    if resp.status_code == 404:
+        return pd.DataFrame(columns=["stock_id", "revenue"])
     resp.raise_for_status()
     resp.encoding = "big5"
 
@@ -232,21 +257,22 @@ def run_bulk(start_ym: str, end_ym: str, dry_run: bool = False) -> pd.DataFrame:
         roc_year, month = pm.year - 1911, pm.month
         got = 0
         for market in ("sii", "otc"):
-            try:
-                df = fetch_bulk_month(market, roc_year, month)
-            except Exception as e:
-                logger.warning(f"  {pm} {market} 失敗：{e}")
-                continue
-            if df.empty:
-                continue
-            # 營收於次月 10 日公告
-            announce = (pm + 1).to_timestamp() + pd.Timedelta(days=9)
-            df["announce_date"] = announce
-            df["revenue_month"] = month
-            df["revenue_year"] = pm.year
-            all_rows.append(df)
-            got += len(df)
-            time.sleep(BULK_INTERVAL)
+            for suffix in MOPS_BULK_SUFFIXES:
+                try:
+                    df = fetch_bulk_month(market, roc_year, month, suffix)
+                except Exception as e:
+                    logger.warning(f"  {pm} {market}_{suffix} 失敗：{e}")
+                    continue
+                time.sleep(BULK_INTERVAL)
+                if df.empty:
+                    continue
+                # 營收於次月 10 日公告
+                announce = (pm + 1).to_timestamp() + pd.Timedelta(days=9)
+                df["announce_date"] = announce
+                df["revenue_month"] = month
+                df["revenue_year"] = pm.year
+                all_rows.append(df)
+                got += len(df)
         logger.info(f"  [{i}/{len(months)}] {pm}（民國{roc_year}年{month}月）：{got} 筆")
 
     if not all_rows:
