@@ -246,11 +246,14 @@ train:  ## 序列訓練 5 個模型（含 v3 調參與門檻曲線，數小時�
 sweep-base:  ## 重搜 base 特徵集的超參數（27 組，約 15 小時，平常不用）
 	$(PY) -m engine.models.sweep_round1 --model rf --round 4 --features data/features.parquet
 
+# 出場參數刻意不傳：threshold_curve 的預設值＝backtest.py 的 CURRENT_EXIT_RULES
+# （唯一來源）。這裡再寫一次字面值等於多一份會漂移的副本 —— 2026-08-24 之前
+# EXIT_DEFAULTS 就已經漂到 trail_trigger=0.25 / stop_loss=None，只因為這行覆寫
+# 才沒把錯誤的曲線跑出來。要改出場規則，改 CURRENT_EXIT_RULES 一個地方。
 curve:  ## 產生 val_sel 門檻曲線（訓練後由人看曲線挑門檻）
 	@for k in $(MODELS); do \
 	  echo "=== $$k ==="; \
-	  $(PY) -m engine.models.threshold_curve --tag $$k --split val_sel \
-	      --trail-trigger 0.15 --trail-pct 0.10 --stop-loss 0.20; \
+	  $(PY) -m engine.models.threshold_curve --tag $$k --split val_sel; \
 	  cp data/threshold_curve_$${k}_val_sel.csv data/sigcurve_$${k}_val_sel.csv; \
 	done
 	@echo ""

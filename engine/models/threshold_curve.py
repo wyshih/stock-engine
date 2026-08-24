@@ -1,7 +1,10 @@
 """門檻挑選曲線：驗證期的**實際回測交易**由高分到低分排序後，逐點的勝率與報酬。
 
 用法：
-  python threshold_curve.py --tag final_lightgbm --split val_sel
+  python -m engine.models.threshold_curve --tag m1_base_up20 --split val_sel
+
+出場規則的預設值直接取 `backtest.py` 的 `CURRENT_EXIT_RULES`（唯一來源），
+所以**不帶任何出場參數跑就已經是正式回測的口徑**，不需要在命令列上覆寫。
 
 做法（使用者指定）：把驗證期的預測機率**由高到低排序**，逐一以每個預測機率當門檻，
 算出累積的勝率與平均／中位報酬，畫成曲線，用眼睛看「取到哪裡開始掉」再決定門檻。
@@ -33,7 +36,7 @@ import pandas as pd  # noqa: E402
 
 # 專案路徑一律走 code/paths.py（唯一來源），不要各檔自行推導
 from engine.paths import DATA_DIR, PROJECT_ROOT  # noqa: E402
-from engine.backtest.backtest import simulate  # noqa: E402
+from engine.backtest.backtest import CURRENT_EXIT_RULES, simulate  # noqa: E402
 
 
 MIN_SAMPLES = 40  # 低於這個筆數的深度不畫，避免在雜訊上挑點
@@ -44,11 +47,16 @@ SERIES = "#3b6ea5"
 BASELINE = "#b0b0b0"
 
 
-# 出場規則的預設值。**全部可由 CLI 覆寫** —— 出場規則還在調整中，
-# 挑門檻時必須能跟著當下要測的規則走，寫死會逼人改程式碼。
-# 不論怎麼調，門檻曲線與正式回測一定用同一組值（驗證與測試同一把尺）。
-EXIT_DEFAULTS = dict(take_profit=0.20, trail_trigger=0.25, trail_pct=0.10,
-                     stop_ma=20, stop_loss=None)
+# 出場規則的預設值＝`backtest.py` 的 `CURRENT_EXIT_RULES`（**唯一來源**）。
+# **全部仍可由 CLI 覆寫** —— 出場規則還在調整中，挑門檻時必須能跟著當下要測的
+# 規則走。但「預設值」只能有一份：門檻曲線與正式回測不同調就是兩把尺。
+#
+# ⚠️ 2026-08-24 修正：這裡原本是一份**自己寫死的副本**，而且已經漂移
+# （trail_trigger=0.25 / stop_loss=None vs 權威的 0.15 / 0.20）。照本檔 docstring
+# 的用法範例直接跑，會落進「MA 停損生效」的另一個出場世界 —— `backtest.py`
+# 的 `_run_exit` 註解自述：MA 停損下 75~78% 的部位在 4 天內被砍。目前只因為
+# Makefile 與 train_all.sh 用字面值覆寫才沒出事，那等於再多兩份副本。
+EXIT_DEFAULTS = dict(CURRENT_EXIT_RULES)
 
 
 def backtest_trades(tag: str, split: str, floor: float, exit_kw: dict) -> pd.DataFrame:
@@ -172,14 +180,16 @@ def main() -> None:
     parser.add_argument("--floor", type=float, default=0.0,
                         help="掃描下限；低於此分數的訊號不進場（純粹為了控制模擬量）")
     # ── 出場規則：與正式回測共用同一組參數，這裡調什麼回測就要調什麼 ──────
-    parser.add_argument("--stop-loss", type=float, default=None,
+    # 預設值一律讀 EXIT_DEFAULTS（＝CURRENT_EXIT_RULES），不在這裡再寫一次字面值。
+    parser.add_argument("--stop-loss", type=float, default=EXIT_DEFAULTS["stop_loss"],
                         help="固定百分比停損，例如 0.20；設定時不使用 MA 停損")
-    parser.add_argument("--trail-trigger", type=float, default=0.25,
+    parser.add_argument("--trail-trigger", type=float, default=EXIT_DEFAULTS["trail_trigger"],
                         help="移動停利啟動點；設 0 或負數表示關閉，改用固定停利")
-    parser.add_argument("--trail-pct", type=float, default=0.10, help="移動停利回落幅度")
-    parser.add_argument("--take-profit", type=float, default=0.20,
+    parser.add_argument("--trail-pct", type=float, default=EXIT_DEFAULTS["trail_pct"],
+                        help="移動停利回落幅度")
+    parser.add_argument("--take-profit", type=float, default=EXIT_DEFAULTS["take_profit"],
                         help="固定停利（僅在 trail-trigger 關閉時生效）")
-    parser.add_argument("--stop-ma", type=int, default=20, choices=[10, 20])
+    parser.add_argument("--stop-ma", type=int, default=EXIT_DEFAULTS["stop_ma"], choices=[10, 20])
     args = parser.parse_args()
 
     exit_kw = dict(EXIT_DEFAULTS)

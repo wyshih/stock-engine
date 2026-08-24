@@ -100,8 +100,9 @@ train() {
     if [ -f "data/sigcurve_${key}_val_sel.csv" ]; then
         echo "  ⏭  門檻曲線已存在，跳過"
     else
-        $PY -m engine.models.threshold_curve --tag "$key" --split val_sel \
-            --trail-trigger 0.15 --trail-pct 0.10 --stop-loss 0.20 || fail "curve $key"
+        # 出場參數刻意不傳：threshold_curve 的預設值＝backtest.py 的
+        # CURRENT_EXIT_RULES（唯一來源）。寫字面值等於多一份會漂移的副本。
+        $PY -m engine.models.threshold_curve --tag "$key" --split val_sel || fail "curve $key"
         cp "data/threshold_curve_${key}_val_sel.csv" "data/sigcurve_${key}_val_sel.csv"
     fi
 }
