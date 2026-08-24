@@ -7,8 +7,8 @@
 算出累積的勝率與平均／中位報酬，畫成曲線，用眼睛看「取到哪裡開始掉」再決定門檻。
 
 ⚠️ **驗證與測試一律用同一套方法**（CLAUDE.md 回測規則）：本檔的每一筆交易都來自
-`backtest.py` 的 `simulate()` —— 隔日開盤進場、MA 停損／移動停利出場、同一支不重複
-進場，跟正式回測逐字相同。**不得在這裡自行定義報酬**（2026-08-06 修正：舊版自己算
+`backtest.py` 的 `simulate()` —— 隔日開盤進場、移動停利／停損出場，**dedup=False
+（訊號層級，同一支在不同日期各算一筆）**，跟 `make backtest` 逐字相同。**不得在這裡自行定義報酬**（2026-08-06 修正：舊版自己算
 「固定持有 20 日收盤報酬」，與回測是兩把尺，導致驗證期看到 +6.62%、測試期只有
 +0.47%，落差 84% 來自這個不一致）。
 
@@ -58,9 +58,47 @@ def backtest_trades(tag: str, split: str, floor: float, exit_kw: dict) -> pd.Dat
     是低門檻集合的子集（同股去重可能讓極少數較晚的訊號補上，屬可忽略的近似）。
     """
     score_path = DATA_DIR / f"score_{tag}_{split}.parquet"
+    # dedup=False：**訊號層級**口徑，每一筆超過門檻的訊號都獨立計一筆，同一支在
+    # 不同日期各算一次。這是使用者實際的用法，也是 make backtest 用的口徑
+    # （CLAUDE.md 規則 8/9、bundle.py 的 CHOSEN_THRESHOLDS 註解）。
+    #
+    # ⚠️ 2026-08-24 修正：舊版沒有傳 dedup，吃到 simulate() 的預設值 True（同股
+    # 不重複進場），於是變成「在去重曲線上挑門檻、拿去跑無去重回測」—— 兩把尺。
+    # BACKTEST_LOG #24 vs #25 明文警告過兩套口徑並存不可混用，這裡正是被混用的
+    # 地方：舊 repo 的 Round 4 曲線只有 4,544 筆（去重），Round 2 的是 116,795 筆
+    # （無去重），而 bundle.py 卻宣稱那些門檻都是在無去重曲線上挑的。
     trades, _ = simulate(split=split, score_path=score_path,
-                         threshold=floor, **exit_kw)
+                         threshold=floor, dedup=False, **exit_kw)
     return trades
+
+
+def _running_median(values: np.ndarray) -> list[float]:
+    """每個前綴的中位數，用雙堆做到 O(n log n)。
+
+    ⚠️ 舊版是 `[np.median(r[:i]) for i in n]` —— 每個前綴各算一次，O(n²)。
+    在去重口徑下只有 4,463 筆，跑得動；改成規則要求的 dedup=False 之後變成
+    218,830 筆，運算量是 2.4×10^10，要跑好幾個小時（2026-08-24 實測卡住）。
+    口徑的錯誤把這個效能問題一起掩蓋了。
+
+    低半堆用負值存成大頂堆（heapq 只有小頂堆）。兩堆大小差不超過 1。
+    """
+    import heapq
+
+    low: list[float] = []    # 較小的一半（存負值，堆頂是最大者）
+    high: list[float] = []   # 較大的一半（堆頂是最小者）
+    out: list[float] = []
+    for x in values:
+        if low and x <= -low[0]:
+            heapq.heappush(low, -x)
+        else:
+            heapq.heappush(high, x)
+        # 再平衡：low 最多比 high 多一個
+        if len(low) > len(high) + 1:
+            heapq.heappush(high, -heapq.heappop(low))
+        elif len(high) > len(low):
+            heapq.heappush(low, -heapq.heappop(high))
+        out.append(-low[0] if len(low) > len(high) else (-low[0] + high[0]) / 2)
+    return out
 
 
 def cumulative_by_threshold(trades: pd.DataFrame) -> pd.DataFrame:
@@ -78,7 +116,7 @@ def cumulative_by_threshold(trades: pd.DataFrame) -> pd.DataFrame:
         "n": n,
         "win_rate": np.cumsum(r > 0) / n,
         "avg_return": np.cumsum(r) / n,
-        "med_return": [float(np.median(r[:i])) for i in n],
+        "med_return": _running_median(r),
     })
     return out[out["n"] >= MIN_SAMPLES].reset_index(drop=True)
 
