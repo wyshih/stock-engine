@@ -76,19 +76,40 @@ def load_score_history(model_key: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def cached_scores(model_key: str, date_str: str) -> pd.DataFrame:
-    """某模型在某一天的全市場分數，依 (模型, 日期) 快取。
+def features_stem(model_key: str) -> str:
+    """該模型訓練時用的特徵檔（去掉 .parquet，給 `load_parquet()` 用）。
+
+    ⚠️ 五個模型分兩群：m1/m2/m6 用 features.parquet、m3/m8 用
+    features_v3.parquet。以前這裡對每個模型都載 features.parquet，v3 的兩個
+    模型有 41% 的欄位被訓練期中位數填掉，前端每天給出的是錯的推薦名單。
+    """
+    return bundle_mod.features_file_for_key(model_key).removesuffix(".parquet")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_scores(model_key: str, date_str: str, features_name: str) -> pd.DataFrame:
+    """某模型在某一天的全市場分數，依 (模型, 日期, 特徵檔) 快取。
 
     切換模型會觸發整頁重跑、需數秒。沒有快取的話每次
     切回看過的模型都要重算一次，使用者會以為點了沒反應而重複點擊。
     features 在函式內載入（它本身也是快取的），不當參數傳 —— 當參數的話
     st.cache_data 要對 3.4M 列的 DataFrame 算雜湊，比重算還慢。
+    ⚠️ `features_name` 一定要進快取鍵：不同模型用不同特徵檔，漏掉的話切模型時
+    會拿到上一個模型那份特徵算出來的東西。（雖然 model_key 已經決定了特徵檔，
+    但明寫出來才不會在之後改動時又被拿掉。）
     """
     from engine.models.predict import get_scores_for_date
 
-    feat = load_parquet("features")
+    feat = load_parquet(features_name)
+    if feat.empty:
+        return pd.DataFrame()
     feat["date"] = pd.to_datetime(feat["date"])
     return get_scores_for_date(model_key, date_str, feat)
+
+
+def scores_for(model_key: str, date_str: str) -> pd.DataFrame:
+    """`cached_scores()` 的呼叫端捷徑：特徵檔由 bundle 自己決定。"""
+    return cached_scores(model_key, date_str, features_stem(model_key))
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -429,7 +450,7 @@ if page == "今日推薦":
         with st.spinner(f"{bundle_mod.model_label(model_key)} 計算中..."):
             # 先拿到全部候選（不篩門檻），過濾股價後才依門檻/顯示數量截取，
             # 避免「先截斷再過濾」導致篩選後剩沒幾支
-            all_probs = cached_scores(model_key, str(pick_date))
+            all_probs = scores_for(model_key, str(pick_date))
             if all_probs.empty:
                 st.warning(f"{pick_date} 這一天算不出分數（無特徵資料）")
                 st.stop()
@@ -526,7 +547,7 @@ if page == "今日推薦":
                                     format_func=lambda k: k if k == "（不對照）"
                                     else bundle_mod.model_label(k), key="peer_model")
                 if peer != "（不對照）":
-                    peer_scores = cached_scores(peer, str(pick_date))
+                    peer_scores = scores_for(peer, str(pick_date))
                     peer_thr = bundle_mod.default_threshold(peer, load_sigcurve(peer))
                     ok = set(peer_scores[peer_scores["score"] >= peer_thr]["stock_id"])
                     result["共識"] = result["stock_id"].map(lambda s: "✅" if s in ok else "")

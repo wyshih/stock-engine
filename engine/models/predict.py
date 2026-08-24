@@ -20,8 +20,9 @@ from pathlib import Path
 import pandas as pd
 
 
-from engine.models.bundle import (available_keys, load_sigcurve, model_label,
-                                  score_for_date, sigcurve_stats_at)
+from engine.models.bundle import (available_keys, features_file, features_path,
+                                  load_by_key, load_sigcurve, model_label,
+                                  score_single, sigcurve_stats_at)
 from engine.paths import DATA_DIR  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -60,23 +61,40 @@ def attach_stock_info(df: pd.DataFrame) -> pd.DataFrame:
     return df.merge(sl, on="stock_id", how="left")
 
 
-def load_features() -> pd.DataFrame:
-    feat = pd.read_parquet(DATA_DIR / "features.parquet")
+def load_features(path: Path | None = None) -> pd.DataFrame:
+    """載入特徵表。預設是 base 特徵檔，v3 的模型要傳自己那一份。
+
+    ⚠️ 不要在這裡寫死 features.parquet 當「唯一的特徵檔」—— m3/m8 是用
+    features_v3.parquet 訓練的，餵錯檔案不會報錯（缺欄被中位數補掉），
+    只會每天安靜地產出錯誤的推薦名單。要用哪一份問 `bundle.features_path()`。
+    """
+    feat = pd.read_parquet(DATA_DIR / "features.parquet" if path is None else path)
     feat["date"] = pd.to_datetime(feat["date"])
     return feat
 
 
+def load_features_for(model_key: str) -> pd.DataFrame:
+    """該模型訓練時用的那一份特徵表。"""
+    return load_features(features_path(load_by_key(model_key)))
+
+
 def get_scores_for_date(model_key: str, target_date: str | None = None,
-                        feat: pd.DataFrame | None = None) -> pd.DataFrame:
+                        feat: pd.DataFrame | None = None,
+                        model: dict | None = None) -> pd.DataFrame:
     """指定模型、指定日期（不傳則用最新一天）全市場的分數，**不做任何篩選**。
+
+    `feat` 不傳的話會依 bundle 指定的特徵檔載入；要自己傳就必須傳對那一份
+    （傳錯會被 `bundle.score_single()` 擋下並 raise）。
 
     回傳欄位：stock_id / score / close / buy_price_low / buy_price_high /
     observe_days，供前端自行套用門檻、股價區間等條件。
     """
-    feat = load_features() if feat is None else feat
+    # `model` 是已載入的 bundle（呼叫端已經載過就傳進來，省一次 150MB 的 unpickle）
+    model = load_by_key(model_key) if model is None else model
+    feat = load_features(features_path(model)) if feat is None else feat
     date = pd.Timestamp(target_date) if target_date else feat["date"].max()
 
-    scores = score_for_date(model_key, feat, date)
+    scores = score_single(model, feat, date)
     if scores.empty:
         return pd.DataFrame()
     scores = scores.sort_values("score", ascending=False).reset_index(drop=True)
@@ -85,11 +103,13 @@ def get_scores_for_date(model_key: str, target_date: str | None = None,
 
 def run(model_key: str, target_date: str | None = None, top_n: int | None = None,
         threshold: float | None = None) -> pd.DataFrame:
-    feat = load_features()
+    model = load_by_key(model_key)
+    feat = load_features(features_path(model))
     date = pd.Timestamp(target_date) if target_date else feat["date"].max()
-    logger.info(f"模型：{model_label(model_key)}（{model_key}）")
+    logger.info(f"模型：{model_label(model_key)}（{model_key}）"
+                f"，特徵檔：{features_file(model)}（{len(feat.columns)} 欄）")
 
-    scores = get_scores_for_date(model_key, str(date.date()), feat)
+    scores = get_scores_for_date(model_key, str(date.date()), feat, model)
     if scores.empty:
         logger.error(f"{date.date()} 無特徵資料或模型推論不出結果")
         return pd.DataFrame()

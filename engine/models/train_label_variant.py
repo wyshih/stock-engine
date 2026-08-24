@@ -166,6 +166,10 @@ def main() -> None:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     bundle = {
         "family": "rf", "round": args.round, "cols": data["cols"],
+        # 推論時要用哪一份特徵檔。存**檔名**而非絕對路徑，bundle 搬到別台機器
+        # 或 repo 換位置時仍然對得到（推論端用 DATA_DIR 接起來）。
+        # 沒有這一欄的話推論端只能猜，而 v3 那兩個模型猜錯就是整份名單全錯。
+        "features_file": Path(args.features).name,
         "stats": data["stats"], "model": model, "arch": None, "params": params,
         "config_round": args.config_round,
         "score_min": float(val_scores.min()), "score_max": float(val_scores.max()),

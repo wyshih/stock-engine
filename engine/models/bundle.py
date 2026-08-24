@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 import pickle
 from pathlib import Path
 
@@ -26,6 +27,25 @@ import pandas as pd
 
 from engine.paths import DATA_DIR, MODEL_DIR
 from engine.models.train_single import apply_stats
+
+logger = logging.getLogger(__name__)
+
+# ── 模型 ↔ 特徵檔 ──────────────────────────────────────────────────────────────
+# 五個模型分成兩群、用**不同的特徵檔**訓練（見 engine/models/train_all.sh）：
+#   base / nomkt（m1/m2/m6）  data/features.parquet     378 欄
+#   v3（m3/m8）               data/features_v3.parquet  518 欄
+# 推論時餵錯檔案不會報錯 —— `reindex` 會把缺的欄位變成 NaN，再被訓練期中位數
+# 補上。實測 m3 餵 features.parquet 有 41% 的欄位被中位數取代，Top-20 只剩
+# 3/20 正確。所以哪一份特徵檔由 bundle 自己說了算，見 `features_file()`。
+BASE_FEATURES_FILE = "features.parquet"
+V3_FEATURES_FILE = "features_v3.parquet"
+
+# v3 特徵轉換產生的後綴（engine/features/v3/spec.py 的 SUFFIX_*）：
+#   _sz  對自己過去 250 日的 z-score
+#   _szx _sz 的當日橫斷面百分位
+#   _xs  原值的當日橫斷面百分位
+# 只有 v3 特徵集會有這些欄位，base/nomkt 一個都沒有。
+V3_COL_SUFFIXES = ("_sz", "_szx", "_xs")
 
 
 def model_label(key: str) -> str:
@@ -81,7 +101,75 @@ def available_keys() -> list[str]:
     return [path.stem[len("bundle_"):] for path in sorted(MODEL_DIR.glob("bundle_*.pkl"))]
 
 
+def _infer_features_file(cols: list[str]) -> str:
+    """沒有 `features_file` 欄位的舊 bundle → 從欄名回推特徵檔。
+
+    ⚠️ 這個回退存在的理由：`features_file` 是 2026-08-24 才加進 bundle 的，
+    在那之前訓練的五個 bundle（models/bundle_*.pkl）裡沒有這個欄位，而重訓
+    要好幾個小時、還會讓門檻全部作廢（CLAUDE.md 規則 7：重訓必須重挑門檻）。
+    所以用欄名判斷而不是要求重訓。
+
+    判準用 v3 轉換的後綴而不是欄數 —— 欄數會隨資料漂移（CLAUDE.md 提到 v3
+    重建後是 518 欄而不是文件上的 509），後綴則是 v3 轉換的定義本身，不會變。
+    """
+    if any(c.endswith(V3_COL_SUFFIXES) for c in cols):
+        return V3_FEATURES_FILE
+    return BASE_FEATURES_FILE
+
+
+def features_file(bundle: dict) -> str:
+    """這個 bundle 要用哪一份特徵檔（檔名，不是絕對路徑）。
+
+    存檔名而非絕對路徑：bundle 搬到別台機器、或 repo 換位置時仍然對得到。
+    """
+    return bundle.get("features_file") or _infer_features_file(bundle["cols"])
+
+
+def features_path(bundle: dict) -> Path:
+    """這個 bundle 要用的特徵檔完整路徑（走 paths.py，CLAUDE.md 規則 13）。"""
+    return DATA_DIR / features_file(bundle)
+
+
+def features_file_for_key(key: str) -> str:
+    """模型代號 → 特徵檔名。"""
+    return features_file(load_by_key(key))
+
+
 # ── 推論 ──────────────────────────────────────────────────────────────────────
+
+# 缺欄比例超過這個門檻就視為「餵錯特徵檔」而不是「特徵還沒暖機」。
+# 少量缺欄是合理的（例如新上市股票某些長週期特徵還算不出來），照舊補中位數；
+# 餵錯檔案則是每天產出整份錯誤推薦名單，必須擋下來。
+MISSING_COLS_TOLERANCE = 0.01
+
+
+def _check_columns(bundle: dict, feat: pd.DataFrame) -> list[str]:
+    """檢查特徵表有沒有 bundle 要的欄位，缺太多就 raise。
+
+    為什麼要擋：`reindex` 把缺的欄位變成 NaN，`apply_stats()` 再用訓練期中位數
+    補上 —— 不報錯、不警告，模型照樣吐得出分數，只是那些分數毫無意義。
+    """
+    cols = bundle["cols"]
+    missing = [c for c in cols if c not in feat.columns]
+    if not missing:
+        return missing
+
+    ratio = len(missing) / len(cols)
+    if ratio > MISSING_COLS_TOLERANCE:
+        name = bundle.get("desc") or bundle.get("label_name") or "（未命名）"
+        raise ValueError(
+            f"特徵檔不對：模型「{name}」需要 {features_file(bundle)}（{len(cols)} 欄），"
+            f"但收到的特徵表只有 {len(feat.columns)} 欄，其中 {len(missing)} 欄"
+            f"（{ratio:.1%}）缺漏，例如 {missing[:5]}。"
+            f"缺的欄位會被訓練期中位數填掉，推論結果沒有意義。"
+            f"請依 bundle 指定的特徵檔載入（engine.models.bundle.features_path()）。")
+
+    # 少量缺欄：仍照舊補中位數，但要留下痕跡，不然又是一次靜默降級
+    logger.warning(
+        f"特徵表缺 {len(missing)} 欄（{ratio:.2%}，容忍範圍內），"
+        f"這些欄位改用訓練期中位數：{missing[:5]}")
+    return missing
+
 
 def _tabular_matrix(bundle: dict, feat_day: pd.DataFrame):
     """單日特徵 → 標準化矩陣。缺欄一律補成 NaN 再走訓練期中位數補值。"""
@@ -92,6 +180,7 @@ def _tabular_matrix(bundle: dict, feat_day: pd.DataFrame):
 
 def score_single(bundle: dict, feat: pd.DataFrame, date: pd.Timestamp) -> pd.DataFrame:
     """單一模型對某一天的全市場推論 → DataFrame[stock_id, score]。"""
+    _check_columns(bundle, feat)
     feat_day = feat[feat["date"] == date]
     if feat_day.empty:
         return pd.DataFrame(columns=["stock_id", "score"])
