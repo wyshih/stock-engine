@@ -96,6 +96,16 @@ def build(source: Path, out_path: Path, audit: Path, volproxy: Path) -> pd.DataF
         batch = plans[i : i + COLUMN_BATCH]
         produced = transform_batch(source, batch, keys)
         for name, series in produced.items():
+            # 全 NaN 的欄位不寫出去。稀疏來源經 self-z 標準化後可能整欄變空 ——
+            # 2026-08-25 實測：tl_break_vol 只在「突破壓力線那一天」有值
+            # （98.46% NaN，50,999 列＝tl_resist_break 的次數，定義本來就稀疏），
+            # 它的 _sz / _szx 是 100% NaN、unique 值 0。
+            # 那兩欄仍被寫進 m3/m8 的 518 欄裡：bundle 的 stats['median'] 是 NaN，
+            # apply_stats 的 fillna(NaN) 補不到值，等於白佔兩個欄位。
+            # 不填 0 —— 那會把「沒有突破」偽裝成「突破量能為零」，製造假訊號。
+            if series.isna().all():
+                print(f"    ⏭  {name} 整欄 NaN，不寫出（來源太稀疏，self-z 後全空）")
+                continue
             arrays[name] = pa.array(series.astype(OUT_DTYPE).to_numpy(), type=pa.float32())
         del produced
         print(f"  batch {i // COLUMN_BATCH + 1}/{n_batches} → 累計 {len(arrays) - 2} 欄", flush=True)
