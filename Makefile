@@ -115,12 +115,18 @@ promote:  ## price_official → price（下游唯一讀的那份）
 
 # 驗「資料裡最新的那一天」而不是「今天」：開盤前跑的話今天還沒有資料，
 # 拿今天去驗必定失敗，整條 update 會在這裡中斷（2026-08-14 早上實際踩到）。
+suspect-jumps:  ## 找出無法用公司行動解釋的跨日跳空 → data/suspect_jumps.csv
+	@# 上櫃的分割與減資沒有官方歷史來源（2026-08-25 查證），只能偵測不能查表。
+	@# 這份清單被 build_price_features 讀取，把那幾天的報酬類特徵設成 NaN。
+	@# 必須在 features 之前跑，否則假報酬會進特徵與 label。
+	$(PY) -m engine.data_source.suspect_jumps
+
 validate:  ## 驗證最新一個交易日的資料
 	$(PY) -m engine.data_source.validate_data --date $$($(PY) -m engine.data_source.fetch_from --last)
 
 # ── 特徵 / label ────────────────────────────────────────────────────────
 # 順序不可換：build_features 是合併步驟，必須最後跑（CLAUDE.md 規則 12）。
-features:  ## 增量建特徵（features.parquet，380 欄）
+features: suspect-jumps  ## 增量建特徵（features.parquet，380 欄）
 	$(PY) -m engine.features.build_price_features
 	$(PY) -m engine.features.build_chip_features
 	$(PY) -m engine.features.build_fundamental_features
@@ -234,6 +240,7 @@ clean-derived:  ## 刪掉所有衍生檔（特徵 / label / 分數 / 曲線 / �
 	@# 留下用**舊資料**調出來的組態。這直接抵觸最高原則（重建得出來）。
 	@# ⚠️ 只刪 data/ 底下的，engine/models/config/sweep_round4_rf.csv 是版控的人工產物，不能刪。
 	@rm -fv data/sweep_m*_rf.csv
+	@rm -fv data/suspect_jumps.csv
 	@echo ""
 	@echo "  ⚠️ models/bundle_*.pkl 沒有刪 —— 重訓很貴（每個約 8 分鐘），不預設清掉。"
 	@echo "     但特徵重建後舊 bundle 的組態與訓練資料都過期了，train_all.sh 會因為"

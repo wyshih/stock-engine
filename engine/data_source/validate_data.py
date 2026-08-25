@@ -134,13 +134,33 @@ def _previous_trading_day(df: pd.DataFrame, target_date: date):
 def _exright_ids(target_date: date) -> set[str]:
     """當日除權息／分割的股票 —— 這些跨日跳空是合法的，不算異常。
 
+    **兩個來源都要用**：
+
+    1. `exright.parquet` —— `fetch_exright.py` 從 TWSE 三個端點抓的，**只涵蓋上市**
+       （實測：TWSE 1,063/1,218 檔有事件，TPEX 只有 1/917）
+    2. `price_official.parquet` 的 `ex_flag` 欄 —— 官方行情自帶的除權息標記，
+       這一份**涵蓋上櫃**（除息 4,101 / 除權息 468 / 除權 455 筆，幾乎全在 TPEX）
+
+    ⚠️ 2026-08-25 修正：舊版只讀 `exright`，於是上櫃的除權息跳空全部被當成異常。
+    實測 874 筆 `|跨日報酬|>11%` 中，有 248 筆是**只有 ex_flag 標記得到**的 ——
+    包括 5314 在 2026-08-14 的 −73.6%（`ex_flag='除權'`，先前被誤判為無法解釋）。
+
     事件表還沒建立時回空集合：寧可多報幾檔要人確認，也不要放行真正的接縫。
     """
+    ids: set[str] = set()
+
     events = read_parquet("exright")
-    if events.empty or "date" not in events.columns:
-        return set()
-    same_day = events[pd.to_datetime(events["date"]).dt.date == target_date]
-    return set(same_day["stock_id"].astype(str))
+    if not events.empty and "date" in events.columns:
+        same_day = events[pd.to_datetime(events["date"]).dt.date == target_date]
+        ids |= set(same_day["stock_id"].astype(str))
+
+    official = read_parquet("price_official")
+    if not official.empty and "ex_flag" in official.columns:
+        same_day = official[pd.to_datetime(official["date"]).dt.date == target_date]
+        flagged = same_day[same_day["ex_flag"].notna() & (same_day["ex_flag"] != "---")]
+        ids |= set(flagged["stock_id"].astype(str))
+
+    return ids
 
 
 def _check_row_count_vs_prev(df: pd.DataFrame, day_df: pd.DataFrame,

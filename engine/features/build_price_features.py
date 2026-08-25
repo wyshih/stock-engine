@@ -69,10 +69,44 @@ def _add_streak(out: dict, prefix: str, condition: pd.Series) -> None:
 # 變動，但不是投資人實際賺到的報酬，拿來當特徵只會是噪音。設 NaN。
 MAX_ABS_RETURN = 1.0
 
+# 無法用公司行動解釋的跳空清單（由 engine.data_source.suspect_jumps 產生）。
+# 模組載入時讀一次：逐股呼叫時再讀檔會變成 3,000 次 I/O。
+from engine.data_source.suspect_jumps import load_suspects  # noqa: E402
+
+_SUSPECT_JUMPS = load_suspects()
+
 
 def _clean_return(r: pd.Series) -> pd.Series:
     """濾掉非交易性的極端報酬（公司行動階梯、資料錯誤）。"""
     return r.where(r.abs() <= MAX_ABS_RETURN)
+
+
+def _mask_suspect_jumps(out: dict) -> None:
+    """把「無法用公司行動解釋的跨日跳空」那幾天的報酬類特徵設成 NaN。
+
+    上櫃的分割與減資沒有任何官方歷史來源（2026-08-25 查證，見
+    `engine/data_source/suspect_jumps.py` 的說明），所以只能偵測不能查表。
+    這類跳空是價格階梯、不是投資人賺到的報酬，留著假值會產生假 label 與假特徵。
+
+    全歷史只有 8 筆（874 筆大跳動中，418 筆有 exright、248 筆有 ex_flag、
+    77 筆是新上市無漲跌幅限制、123 筆跨停牌）。量很小，但單筆失真極大 ——
+    最大的一筆是 3293 鈊象 2024-07-26 的 −46.3%（1:2 分割）。
+
+    ⚠️ `out` 裡的 Series 是**位置索引**（`_compute_stock` 開頭 reset_index 過），
+    不是日期索引，所以要用 `out["date"]` 對位，不能拿日期直接 .loc。
+
+    清單不存在時什麼都不做 —— 這是選用的防護，不是流程的必要條件。
+    """
+    if not _SUSPECT_JUMPS:
+        return
+    dates, ids = out["date"], out["stock_id"]
+    hit = pd.Series([(d, str(sid)) in _SUSPECT_JUMPS for d, sid in zip(dates, ids)],
+                    index=dates.index)
+    if not hit.any():
+        return
+    for key, series in out.items():
+        if key.startswith(("return_", "rs_")) and isinstance(series, pd.Series):
+            series[hit] = np.nan
 
 
 def _add_event(out: dict, prefix: str, event: pd.Series) -> None:
@@ -423,6 +457,9 @@ def _compute_stock(group: pd.DataFrame,
     _momentum_features(group, out, market_close)
     _volatility_features(group, out)
     _volume_features(group, out)
+
+    # 最後才遮蔽：報酬類特徵都算完了，才把無法解釋的跳空那幾天設成 NaN
+    _mask_suspect_jumps(out)
 
     return pd.DataFrame(out)
 
