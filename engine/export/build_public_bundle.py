@@ -7,11 +7,11 @@
 產出（預設寫到 ../dashboard/public_data/）：
 
     price_test.parquet     該期間全市場 OHLCV（前端的圖表與指標都由這份現算）
-    scores_test.parquet    10 個模型 × 該期間每日每股的分數（long format）
+    scores_test.parquet    5 個模型 × 該期間每日每股的分數（long format）
     pattern_hits.parquet   148 條說法的命中矩陣，int8，該期間全市場
                            —— 前端因此不需要 96 欄特徵值，也不需要 TA-Lib
     pattern_stats.json     148 條說法的**全市場全歷史**條件統計（含對照組 baseline）
-    sigcurve_m*.csv ×10    各模型 val_sel 門檻曲線（前端滑桿旁的數字讀這個）
+    sigcurve_m*.csv ×5     各模型 val_sel 門檻曲線（前端滑桿旁的數字讀這個）
     backtest_summary.csv   絕對門檻版 + 訊號數對齊版（每日前 1.5%）兩張表
     stock_list.parquet     代號 / 名稱 / 市場 / 產業
     manifest.json          期間、模型與門檻、產生時間、資料口徑、免責聲明
@@ -66,7 +66,7 @@ DISCLAIMER = (
 CAVEATS = [
     "資料源為 TWSE / TPEx 官方端點，不含已下市股票 —— 全部統計都帶生存偏差，數字偏樂觀。",
     "測試期（2025-02~2026-07）不在訓練期內，但門檻是在 2024 下半年的 val_sel 上由人挑的。",
-    "10 個模型全部是 Round 4 切分：train 2020-01~2023-11、val 2024、test 2025-02~2026-07，兩個交界各留一個月 embargo。",
+    "5 個模型全部是 Round 4 切分：train 2020-01~2023-11、val 2024、test 2025-02~2026-07，兩個交界各留一個月 embargo。",
     "回測口徑 dedup=False（每筆超過門檻的訊號獨立進場），與挑門檻時看的曲線同一把尺。",
     "出場規則：獲利 15% 後啟動移動停利、從最高收盤回落 10% 出場、固定停損 20%。",
     "148 條技術說法的統計是全市場全歷史，不是個股自己的統計，也沒有納入產業與籌碼結構。",
@@ -93,7 +93,7 @@ def build_scores(out_dir: Path) -> pd.DataFrame:
             path = score_path(key, split)
             if not path.exists():
                 raise SystemExit(
-                    f"找不到 {path}。10 個模型的分數檔要先有才能出資料包 —— 請先 `make train`。")
+                    f"找不到 {path}。5 個模型的分數檔要先有才能出資料包 —— 請先 `make train`。")
             part = pd.read_parquet(path)
             part["date"] = pd.to_datetime(part["date"])
             part = part[(part["date"] >= TEST_START) & (part["date"] <= TEST_END)]

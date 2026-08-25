@@ -65,16 +65,26 @@ def _load_scores(split: str, score_path: Path | None = None) -> pd.DataFrame:
 
 
 def _get_threshold() -> float:
-    """
-    交易門檻：讀 `threshold_trading.pkl`（`tune_trading_threshold.py` 在
-    meta_val(2025) 用實際交易模擬報酬搜出），遺失時 fallback 0.775。
+    """`simulate()` 沒收到 threshold 時的回退值。
 
-    2026-07-29：原本讀 `threshold.pkl`（Meta 分類任務的 F-beta 門檻），
-    那是不同用途的數字，見 doc/AUDIT_20260728.md §C-4。
+    ⚠️ 2026-08-25：這條路徑已經是死的，保留只為了讓舊呼叫不會爆。
+    它讀的 `threshold_trading.pkl` 由 `tune_trading_threshold.py` 產生，而那支
+    在同日被刪除（它用的是委員會時代的 `meta_val` 切分，Round 4 沒有這個切分；
+    且 `simulate()` 呼叫沒傳 dedup 與出場參數，違反 CLAUDE.md 規則 8）。
+    該 pkl 檔目前不存在，所以這裡永遠回傳 0.775 —— 那是委員會時代 Meta 分類器
+    的門檻，**與現行五個模型完全無關**。
+
+    現行流程一律明確傳門檻：`summary.run_one()` 傳 `CHOSEN_THRESHOLDS[key]`，
+    `threshold_curve` 傳 `--floor`。沒有任何生產路徑會走到這個回退值。
     """
     import pickle
     p = MODEL_DIR / "threshold_trading.pkl"
-    return pickle.load(open(p, "rb"))["threshold"] if p.exists() else 0.775
+    if p.exists():
+        return pickle.load(open(p, "rb"))["threshold"]
+    logger.warning(
+        "simulate() 沒有指定 threshold，回退到 0.775 —— 那是委員會時代的舊門檻，"
+        "與現行模型無關。生產路徑應該明確傳門檻（見 CHOSEN_THRESHOLDS）。")
+    return 0.775
 
 
 # 目前採用的出場規則（2026-08-06 起）。前端回測頁的滑桿預設值、關注股票的

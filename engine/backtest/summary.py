@@ -1,4 +1,4 @@
-"""10 個模型的回測彙總表 —— **唯一實作**（CLAUDE.md 規則 8 / 9）。
+"""5 個模型的回測彙總表 —— **唯一實作**（CLAUDE.md 規則 8 / 9）。
 
 `make backtest`（內部驗證）與 `make export-public`（public 展示）都呼叫這裡，
 不是各寫一份。這兩條路徑之所以必須共用，是因為本專案已經吃過一次虧：
@@ -133,7 +133,7 @@ def build_backtest_summary(out_dir: Path, tmp_dir: Path,
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    parser = argparse.ArgumentParser(description="10 個模型的回測彙總（絕對門檻 + 訊號數對齊）")
+    parser = argparse.ArgumentParser(description="5 個模型的回測彙總（絕對門檻 + 訊號數對齊）")
     parser.add_argument("--out", type=Path, default=Path("data/backtest"))
     parser.add_argument("--splits", default=",".join(DEFAULT_SPLITS),
                         help="逗號分隔，預設 test,test2（Round 4 的樣本外全段）")

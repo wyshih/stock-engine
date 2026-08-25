@@ -1,25 +1,70 @@
-# 實驗狀態交接（更新 2026-08-15）
+# 實驗狀態交接（更新 2026-08-25）
 
 跨 session 的交接文件。對話會斷、agent 會被 session limit 砍掉，這份不會。
 **開工前先讀這份**，再讀 `doc/BACKTEST_LOG.md`。
 
 ---
 
-## 現在正在跑什麼
+## 現在的狀態
 
-| 項目 | 狀態 | 怎麼看 |
-|---|---|---|
-| Round 4 參數搜尋 第一階段 | 🟢 執行中 | `tail -f ~/Library/Logs/stock_queue.log` |
+| 項目 | 狀態 |
+|---|---|
+| 資料層 | ✅ 2019-01-02 ~ 2026-08-21 全部重建完成（`make bootstrap` + `make rebuild-full`） |
+| 五個模型 | ✅ 各自調參（每模型 4 組）+ 訓練完成，`models/bundle_*.pkl` |
+| 門檻曲線 | ✅ 五條，dedup=False 口徑（2026-08-24 修正過口徑，見下） |
+| **門檻** | ⬜ **尚未重挑** —— `CHOSEN_THRESHOLDS` 裡是舊模型的值，對新模型無意義（規則 7） |
+| 回測 | ⬜ 尚未跑 |
+| 待修 | ⬜ 上櫃分割減資的假報酬、v3 audit 的分布洩漏、val_es↔val_sel 的 embargo |
 
-執行方式：`nohup ./run_queue.sh > ~/Library/Logs/stock_queue.log 2>&1 &`
-**脫離式執行，不受任何 Claude session 影響。** 中斷後直接重跑同一行即可續跑。
+現行五個模型：`m1_base_up20` / `m2_nomkt_up20` / `m3_v3_up20` / `m6_base_nobear` /
+`m8_v3_nobear`（編號留空號是刻意的，對得上 BACKTEST_LOG 的 ①②③⑥⑧）。
 
-佇列三步：搜尋 → `finalists.py`（存各段分數）→ `train_bundles.py`（存前端 bundle）。
+### 怎麼跑
 
-### 續跑的保證
-- `sweep_round1.py` **每跑完一組就寫 CSV**，中斷不會遺失已完成的組態
-- `load_done()` 讀 CSV 當進度檔，重跑時自動跳過已完成的
-- 檢查是否還活著：`pgrep -f run_queue.sh`
+```bash
+make bootstrap      # 從零抓資料（依主機分流，約 3~4 小時）
+make rebuild-full   # 清衍生檔 → 特徵 380 欄 → v3 518 欄 → label
+make train          # 五個模型各自調參 + 訓練（約 3 小時）
+make curve          # 產門檻曲線 → 由人看曲線挑門檻
+make backtest       # 絕對門檻 + 每日前 1.5% 訊號對齊，兩張表
+make verify-vs-old  # 對照舊 repo 逐項驗證
+```
+
+⚠️ **`make rebuild-full` 之後若要真的重訓，得先 `make clean-models`** —— `train_all.sh`
+的跳過判斷只看「bundle 檔存在」，否則會留下用舊特徵調出來的組態與舊模型。
+
+### 已不存在的東西（舊文件會提到，別去找）
+
+`run_queue.sh`、`finalists.py`、`train_bundles.py`、`train_submodels.py` 都是委員會
+時代的腳本，**沒有搬進本 repo**（見 CLAUDE.md 的「不要搬回來的東西」）。
+`best_config()` 是唯一從 `finalists.py` 抽出來的部分，現在住在
+`engine/models/sweep_config.py`。
+
+---
+
+## 調參的現行做法（2026-08-23 使用者訂的兩條規定）
+
+**一、每個模型各自調參，不得共用組態。** 每個模型用自己的特徵集、自己的 label
+跑一輪搜尋，讀自己那份 `data/sweep_{key}_rf.csv`。即使特徵集相同、只差 label
+也各搜各的。`search_space()` 對沒定義空間的 key 直接 raise，不會 fallback。
+
+**二、搜尋與訓練用同一個樹數 300，不分兩階段。**
+
+現行搜尋空間（`sweep_round1.py` 的 `MODEL_SPACES`，使用者逐項確認）：
+
+| 模型 | max_features | max_depth | min_samples_leaf（固定） |
+|---|---|---|---|
+| m1 / m2 / m6 | 15, 20 | 10, 20 | 200 |
+| m3 / m8 | 15, 20 | 15, 30 | 400 |
+
+每模型 4 組、合計 20 組。錨點取自 norf 封存 bundle 的實際參數（base 家族
+20/200/15、v3 家族 20/400/30）。`n_jobs=8`、`class_weight=None`。
+
+⚠️ `min_samples_leaf` 移出搜尋空間是因為實測它既沒訊號也不影響速度
+（AUC 全距 0.0013、耗時比 1.02x），留著只是讓組數翻倍。
+
+**調參只評估 `val_sel`** —— 不碰測試期（那等於把測試期攤在眼前），也不需要
+`val_es`（RF 沒有 early stopping）。
 
 ---
 
@@ -41,7 +86,10 @@ test2    2026-01-01 ~ 2026-07-31     251,189 列  正例 35.2%
 
 Round 1/2/3 完全沒動，舊實驗仍可重現。
 
-## Round 4 搜尋空間（2026-08-15，使用者逐項指定）
+## 【歷史】Round 4 搜尋空間（2026-08-15）
+
+⚠️ **以下為歷史記錄，不是現行做法。** 現行是每模型各自調參、每模型 4 組，
+見上方「調參的現行做法」。這段留著是因為它記錄了當初為什麼選那個範圍。
 
 ```
 max_features      10, 15, 20      舊範圍下邊界是 20，往更小找
@@ -73,7 +121,8 @@ n_jobs            6（10 核機器）
 
 | Label | 定義 | 基準率 | 狀態 |
 |---|---|---|---|
-| `label_up20` | 未來20日上漲天數 ≥ 10 | 0.375 | 前端使用中 |
+| `label_up20` | 未來20日上漲天數 ≥ 10 | 0.375 | **現行使用中**（m1/m2/m3） |
+| `label_nobear` | 同上，但當下空頭排列的列整列排除（不標 0） | 0.394 | **現行使用中**（m6/m8） |
 | `exit_return > 7%` | 套現行出場規則的實際報酬 | 0.510 | ✅ 已訓練，已上前端 |
 | `label_A` | 未來20日最大漲幅 > 1.5σ | 0.239 | ⬜ 已算好，未訓練 |
 | `label_B` | 相對大盤 20日超額 > 3% | 0.280 | ⬜ 已算好，未訓練 |
@@ -295,7 +344,7 @@ https://mopsov.twse.com.tw/nas/t21/{sii|otc}/t21sc03_<民國年>_<月>_<0|1>.htm
 - **門檻每次重訓都要重挑**，絕對值搬不動。方法固定：驗證期預測機率由高到低，
   **每一個機率值都當一次門檻**跑一遍，畫曲線由人看圖挑，不用「取前 N%」或任何
   自動規則。回測一律呼叫 `backtest.py` 的 `simulate()`/`performance()`，`dedup=False`。
-- **不要並行訓練**：10 核機器，RF 內層已吃 6 核。三件同時跑 load average 衝到 23，
+- **不要並行訓練**：10 核機器，RF 內層已吃 8 核。三件同時跑 load average 衝到 23，
   互相搶資源反而每件都變慢（2026-08-14 實測）。
 
 ---

@@ -18,7 +18,29 @@ from engine.models.bundle import CHOSEN_THRESHOLDS
 
 
 class TestScope:
-    def test_covers_exactly_ten_models(self):
+    def test_caveats_do_not_claim_a_stale_model_count(self):
+        """CAVEATS 會進 manifest.json，被 dashboard 的「關於」頁逐條顯示給外人看。
+
+        2026-08-24 稽核抓到：模型從十個縮到五個之後，這裡仍寫著「10 個模型全部是
+        Round 4 切分…」——**那是會出現在公開網站上的事實錯誤**。文案裡的數字必須
+        跟 MODEL_KEYS 對得起來。
+        """
+        # Arrange
+        import re
+        from engine.export import build_public_bundle as bpb
+        actual = len(bpb.MODEL_KEYS)
+
+        # Act：抓出 CAVEATS 裡所有「N 個模型」的宣稱
+        claimed = [int(n) for text in bpb.CAVEATS
+                   for n in re.findall(r"(\d+)\s*個模型", text)]
+
+        # Assert
+        for n in claimed:
+            assert n == actual, (
+                f"CAVEATS 宣稱 {n} 個模型，實際是 {actual} 個。"
+                f"這條字串會顯示在公開網站上")
+
+    def test_covers_exactly_five_models(self):
         assert len(bpb.MODEL_KEYS) == 5
 
     def test_every_model_has_a_chosen_threshold(self):

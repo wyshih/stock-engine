@@ -221,13 +221,32 @@ bootstrap:  ## 從 $(BOOTSTRAP_FROM) 起全量抓取（依主機分流 + 兩階�
 	@$(MAKE) promote
 	@$(MAKE) validate
 
-clean-derived:  ## 刪掉所有衍生檔（特徵 / label / 分數 / 曲線）
+clean-derived:  ## 刪掉所有衍生檔（特徵 / label / 分數 / 曲線 / 調參結果）
 	@echo "  即將刪除 data/ 底下的衍生檔（原始資料不動）"
 	@rm -fv data/{price,chip,fundamental,talib,swing,market,trendline,relative,revenue}_features.parquet
 	@rm -fv data/features.parquet data/features_v3.parquet
 	@rm -fv data/labels.parquet data/labels_nobear.parquet
 	@rm -fv data/feature_audit.csv data/volproxy.csv
 	@rm -fv data/score_*.parquet data/sigcurve_*.csv data/threshold_curve_*
+	@# 調參結果也是衍生檔 —— 它是「用某一份特徵資料調出來的組態」。
+	@# 2026-08-24 稽核抓到：舊版不刪它，於是 `make rebuild-full && make train` 在特徵
+	@# 重建之後，train_all.sh 的跳過判斷（CSV 列數 == 組合數）會全部印「已存在，跳過」，
+	@# 留下用**舊資料**調出來的組態。這直接抵觸最高原則（重建得出來）。
+	@# ⚠️ 只刪 data/ 底下的，engine/models/config/sweep_round4_rf.csv 是版控的人工產物，不能刪。
+	@rm -fv data/sweep_m*_rf.csv
+	@echo ""
+	@echo "  ⚠️ models/bundle_*.pkl 沒有刪 —— 重訓很貴（每個約 8 分鐘），不預設清掉。"
+	@echo "     但特徵重建後舊 bundle 的組態與訓練資料都過期了，train_all.sh 會因為"
+	@echo "     「bundle 檔已存在」而跳過重訓。要真正從頭重建請先跑 make clean-models。"
+	@echo ""
+
+clean-models:  ## 刪掉訓練產物（bundle / 分數 / 曲線），下次 make train 會真的重訓
+	@echo "  即將刪除 models/bundle_*.pkl 與對應的分數、曲線"
+	@rm -fv models/bundle_*.pkl
+	@rm -fv data/score_*.parquet data/sigcurve_*.csv data/threshold_curve_*
+	@echo ""
+	@echo "  已清空。注意：CHOSEN_THRESHOLDS 裡的門檻是舊模型的，重訓後必須重挑（規則 7）。"
+	@echo ""
 
 rebuild-full: clean-derived features features-v3 labels  ## 先刪衍生檔再全量重建
 	@echo ""
