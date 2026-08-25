@@ -101,6 +101,7 @@ CURRENT_EXIT_RULES = {
 
 
 def _run_exit(days, idx_buy: int, buy_price: float, row_getter, ma_col: str, stop_ma: int,
+              max_hold_bars: int | None = None,
               take_profit: float = 0.20,
               trail_trigger: float | None = 0.25, trail_pct: float = 0.10,
               stop_loss: float | None = None):
@@ -131,7 +132,15 @@ def _run_exit(days, idx_buy: int, buy_price: float, row_getter, ma_col: str, sto
     trailing = False     # 是否已進入移動停利模式
     peak_price = None
 
-    for k in range(1, len(days) - idx_buy):
+    # max_hold_bars：持有期上限（交易日）。None＝不限，這是既有行為。
+    # ⚠️ 2026-08-25 新增。不限上限時，2024H2 的訊號平均抱 108 根 bar、一路抱到
+    # 2025/4 的關稅崩盤 —— 「val_sel 的回測」實際量的是「2024H2 進場 + 最長兩年
+    # 持有」，橫跨三種市場狀態，不同 split 的數字在方法論上本來就不可比。
+    # 使用者要求兩種都產，故用參數而非改預設。
+    limit = len(days) - idx_buy
+    if max_hold_bars is not None:
+        limit = min(limit, max_hold_bars + 1)
+    for k in range(1, limit):
         d = days[idx_buy + k]
         r = row_getter(d)
         if r is None or pd.isna(r["close"]):
@@ -163,12 +172,20 @@ def _run_exit(days, idx_buy: int, buy_price: float, row_getter, ma_col: str, sto
             return d, close_p, f"ma{stop_ma}_stop"
         below_prev = below_today
 
-    # 到資料結束都沒觸發出場條件
-    last_d = days[-1]
+    # 沒有觸發任何出場條件 —— 出場日是「持有上限那天」或「資料結束那天」，
+    # 取先到的那一個。
+    # ⚠️ 2026-08-25：舊版固定用 days[-1]，所以 max_hold_bars 只縮短了迴圈、
+    #    最後仍會落到資料末端 —— 上限等於沒有生效（寫測試時抓到）。
+    last_idx = len(days) - 1
+    reason = "data_end"
+    if max_hold_bars is not None and idx_buy + max_hold_bars < last_idx:
+        last_idx = idx_buy + max_hold_bars
+        reason = "max_hold"
+    last_d = days[last_idx]
     r = row_getter(last_d)
     if r is None or pd.isna(r["close"]):
         return None, None, None
-    return last_d, r["close"], "data_end"
+    return last_d, r["close"], reason
 
 
 def _streak_of(cond: pd.Series, stock_id: pd.Series) -> pd.Series:
@@ -258,6 +275,7 @@ def simulate(
     trail_pct: float = 0.10,
     stop_loss: float | None = None,
     dedup: bool = True,
+    max_hold_bars: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     逐日模擬：每天看訊號，隔天開盤買進。
@@ -385,6 +403,7 @@ def simulate(
 
             sell_date, sell_price, sell_reason = _run_exit(
                 days, idx_buy, buy_price, lambda d: _row(sid, d), ma_col, stop_ma,
+                max_hold_bars=max_hold_bars,
                 take_profit=take_profit, trail_trigger=trail_trigger, trail_pct=trail_pct,
                 stop_loss=stop_loss,
             )

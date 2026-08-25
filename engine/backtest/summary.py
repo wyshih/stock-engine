@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 # 固定門檻的比較會退化成門檻鬆緊的比較（doc/BACKTEST_LOG.md #28）。
 MATCHED_TOP_PCT = 0.015
 
+# 持有期上限，兩種都產（2026-08-25 使用者指定）。
+#   None  不限 —— 既有行為，與 norf 的歷史記錄同口徑，但 2024H2 的訊號平均抱
+#         108 根 bar、一路抱到 2025/4 崩盤，跨 split 的數字不可比
+#   20    與 label_up20 的 horizon 一致（未來 20 個交易日），模型預測什麼就賺什麼
+# 並列才看得出「績效有多少來自持有期拉長、有多少來自選股本身」。
+HOLD_VARIANTS = (None, 20)
+
 # 2026-08-22 使用者從原本的十個裡選定這五個，砍掉的 m4/m5/m7/m9/m10 全是
 # 去大盤／去波動變體（BACKTEST_LOG #28：它們在絕對門檻下的高報酬來自門檻效應）。
 # 代號中間有空號是刻意的 —— 沿用原編號，才對得上 BACKTEST_LOG 裡的 ①②③⑥⑧。
@@ -84,17 +91,27 @@ def top_pct_score_file(score_file: Path, tmp_dir: Path, key: str, pct: float) ->
     return path
 
 
-def run_one(key: str, score_file: Path, threshold: float, mode: str) -> dict:
-    """單一模型單一口徑的回測。出場規則一律取 CURRENT_EXIT_RULES，不接受覆寫。"""
+def run_one(key: str, score_file: Path, threshold: float, mode: str,
+            max_hold_bars: int | None = None) -> dict:
+    """單一模型單一口徑的回測。出場規則一律取 CURRENT_EXIT_RULES，不接受覆寫。
+
+    `max_hold_bars`：持有期上限（交易日），None＝不限。兩種都要產 ——
+    不限上限時，2024H2 的訊號平均抱 108 根 bar、一路抱到 2025/4 的崩盤，
+    跨 split 的數字在方法論上不可比；限 20 日則與 `label_up20` 的 horizon 一致
+    （模型預測什麼就賺什麼）。並列才看得出「績效有多少來自持有期而非選股」。
+    """
     from engine.backtest.backtest import CURRENT_EXIT_RULES as R, performance, simulate
 
     trades, price = simulate(
         "test", score_path=score_file, threshold=threshold, dedup=False,
+        max_hold_bars=max_hold_bars,
         take_profit=R["take_profit"], stop_ma=R["stop_ma"],
         trail_trigger=R["trail_trigger"], trail_pct=R["trail_pct"],
         stop_loss=R["stop_loss"],
     )
-    row = {"model": key, "mode": mode, "threshold": threshold, "trades": 0}
+    row = {"model": key, "mode": mode,
+           "max_hold": "無上限" if max_hold_bars is None else f"{max_hold_bars}日",
+           "threshold": threshold, "trades": 0}
     if trades.empty:
         return row
     perf = performance(trades, price)
@@ -119,11 +136,14 @@ def build_backtest_summary(out_dir: Path, tmp_dir: Path,
     for key in keys:
         thr = CHOSEN_THRESHOLDS[key]
         combined = combined_score_file(key, tmp_dir, splits, start, end)
-        logger.info(f"回測 {key}：絕對門檻 {thr}")
-        rows.append(run_one(key, combined, thr, "absolute"))
-        logger.info(f"回測 {key}：訊號數對齊（每日前 {MATCHED_TOP_PCT:.1%}）")
-        rows.append(run_one(key, top_pct_score_file(combined, tmp_dir, key, MATCHED_TOP_PCT),
-                            0.0, "matched_top"))
+        top = top_pct_score_file(combined, tmp_dir, key, MATCHED_TOP_PCT)
+        # 2×2：絕對門檻 / 訊號數對齊　×　無持有上限 / 20 日上限
+        for hold in HOLD_VARIANTS:
+            label = "無上限" if hold is None else f"{hold} 日"
+            logger.info(f"回測 {key}：絕對門檻 {thr}　持有{label}")
+            rows.append(run_one(key, combined, thr, "absolute", hold))
+            logger.info(f"回測 {key}：訊號數對齊（每日前 {MATCHED_TOP_PCT:.1%}）　持有{label}")
+            rows.append(run_one(key, top, 0.0, "matched_top", hold))
     df = pd.DataFrame(rows)
     out_dir.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_dir / "backtest_summary.csv", index=False)

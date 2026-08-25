@@ -36,7 +36,17 @@ from engine.paths import DATA_DIR  # noqa: E402
 logger = logging.getLogger(__name__)
 
 KEY_COLS = ("date", "stock_id")
-AUDIT_YEARS = (2020, 2022, 2024, 2026)
+# ⚠️ 只能用**訓練期內**的年份（2026-08-25 使用者指定）。
+# 舊值是 (2020, 2022, 2024, 2026) —— 2024 是 val_es/val_sel、2026 是 test2。
+# audit 的產出決定每個特徵在 v3 裡「留原值還是只留 _sz/_szx」，也就是決定
+# m3/m8 的特徵集本身。用驗證期與測試期的分布來做這個決定，是**特徵選擇層級的
+# in-sample**：程度比 shape 特徵輕（只用分布統計、沒用 label），但判準完全相同
+# —— CLAUDE.md 規則 3 拿來永久封殺 shape 特徵的那個論證，一字不改可以套在這裡。
+# 實測受影響 51/378 欄（8 個 drift 分類 + 43 個 identity 分類）。
+AUDIT_YEARS = (2020, 2021, 2022, 2023)
+# 訓練期結束日（Round 4）。main() 會用它把來源資料截斷，確保連 volproxy 的
+# Spearman 抽樣也不會碰到 val/test。
+TRAIN_END = "2023-11-30"
 # 逐年 P10~P90 寬度的 max/min 超過這個倍數，視為尺度逐年漂移
 DRIFT_SCALE_RATIO = 2.0
 # 稀疏計數的判定：整數值、相異值不多、零佔比高
@@ -147,11 +157,18 @@ def main() -> None:
     parser.add_argument("--price", type=Path, default=DATA_DIR / "price.parquet")
     parser.add_argument("--audit-out", type=Path, default=DATA_DIR / "feature_audit.csv")
     parser.add_argument("--volproxy-out", type=Path, default=DATA_DIR / "volproxy.csv")
+    parser.add_argument("--train-end", default=TRAIN_END,
+                        help="只用這一天（含）之前的資料做稽核 —— 避免用驗證期與"
+                             "測試期的分布決定特徵表示法（見 AUDIT_YEARS 的說明）")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     features = pd.read_parquet(args.features)
+    if args.train_end:
+        before = len(features)
+        features = features[pd.to_datetime(features["date"]) <= args.train_end]
+        print(f"截斷到訓練期 {args.train_end}：{before:,} → {len(features):,} 列")
     features["date"] = pd.to_datetime(features["date"])
     features["year"] = features["date"].dt.year
     columns = [c for c in features.columns
