@@ -276,8 +276,17 @@ sweep-base:  ## 重搜 base 特徵集的超參數（27 組，約 15 小時，平
 # （唯一來源）。這裡再寫一次字面值等於多一份會漂移的副本 —— 2026-08-24 之前
 # EXIT_DEFAULTS 就已經漂到 trail_trigger=0.25 / stop_loss=None，只因為這行覆寫
 # 才沒把錯誤的曲線跑出來。要改出場規則，改 CURRENT_EXIT_RULES 一個地方。
-curve:  ## 產生 val_sel 門檻曲線（訓練後由人看曲線挑門檻）
+# 已存在就跳過，與 train_all.sh 的行為一致（那邊第 100 行就是這樣寫的）。
+# ⚠️ 2026-08-26 修正：舊版無條件重跑。而 train_all.sh 在訓練每個模型時**已經
+#    產出曲線了**，所以重建流程跑完 train 再跑 curve，等於把五條曲線重算一遍
+#    —— 實測白花約 30 分鐘，結果完全相同（相同輸入、相同程式）。
+# 要強制重算：make curve FORCE=1（改了出場規則或換了分數檔時才需要）。
+curve:  ## 產生 val_sel 門檻曲線（已存在就跳過；FORCE=1 強制重算）
 	@for k in $(MODELS); do \
+	  if [ -z "$(FORCE)" ] && [ -f "data/sigcurve_$${k}_val_sel.csv" ]; then \
+	    echo "=== $$k ===  ⏭  曲線已存在，跳過（FORCE=1 可強制重算）"; \
+	    continue; \
+	  fi; \
 	  echo "=== $$k ==="; \
 	  $(PY) -m engine.models.threshold_curve --tag $$k --split val_sel; \
 	  cp data/threshold_curve_$${k}_val_sel.csv data/sigcurve_$${k}_val_sel.csv; \

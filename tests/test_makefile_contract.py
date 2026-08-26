@@ -73,6 +73,40 @@ class TestCleanDerived:
             "使用者會以為 rebuild-full 之後 make train 真的會重訓")
 
 
+class TestCurve:
+    """門檻曲線的重跑成本。
+
+    2026-08-26：`make curve` 舊版無條件重跑，而 `train_all.sh` 在訓練每個模型時
+    **已經產出曲線了**（第 100 行就有跳過判斷）。所以 P1 重建流程跑完 train 再跑
+    curve，等於把五條曲線重算一遍 —— 實測白花約 30 分鐘，結果完全相同。
+    """
+
+    def test_skips_existing_curves(self):
+        # Act
+        body = _target_body("curve")
+
+        # Assert
+        assert "sigcurve_" in body and "-f " in body, (
+            "make curve 沒有檢查曲線是否已存在 —— 會無條件重跑，"
+            "而 train_all.sh 已經產過一次了")
+
+    def test_force_flag_exists(self):
+        """改了出場規則或換了分數檔時要能強制重算。"""
+        # Act
+        body = _target_body("curve")
+
+        # Assert
+        assert "FORCE" in body, "少了強制重算的出路"
+
+    def test_still_reminds_human_to_pick(self):
+        """規則 7：門檻由人挑。這個提示不能因為加跳過而掉了。"""
+        # Act
+        body = _target_body("curve")
+
+        # Assert
+        assert "CHOSEN_THRESHOLDS" in body
+
+
 class TestCleanModels:
     def test_target_exists_and_removes_bundles(self):
         # Act
