@@ -27,11 +27,12 @@ class TestSearchSpace:
     def test_every_model_has_its_own_space(self):
         # Arrange
         expected = {"m1_base_up20", "m2_nomkt_up20", "m3_v3_up20",
-                    "m6_base_nobear", "m8_v3_nobear"}
+                    "m6_base_nobear", "m8_v3_nobear", "m1_mdd10"}
 
         # Act / Assert
-        assert set(sw.MODEL_SPACES) == expected
-        assert set(sw.MODEL_FIXED_PARAMS) == expected
+        from engine.models.bundle import EXPERIMENTAL_KEYS
+        assert set(sw.MODEL_SPACES) - EXPERIMENTAL_KEYS == expected
+        assert set(sw.MODEL_FIXED_PARAMS) - EXPERIMENTAL_KEYS == expected
 
     def test_unknown_key_is_rejected(self):
         """沒定義空間的模型必須報錯，不可以默默沿用別人的。"""

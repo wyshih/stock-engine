@@ -115,3 +115,43 @@ class TestCleanModels:
         # Assert
         assert "models/bundle_" in body
         assert "sigcurve_" in body, "刪了模型卻留著它的門檻曲線，會對不起來"
+
+
+class TestUpdateCoversEveryModel:
+    """`make update` 必須把每個模型要用的東西都更新到。
+
+    2026-08-29 稽核抓到兩個漏登記：`features-v3` 不在 update 裡，於是 m3/m8 靜默
+    停在舊日期（score_recent 只會說「已是最新」，不報錯）；`labels_mdd10` 不在
+    labels 裡。這類漏登記不會有任何錯誤訊息，只能靠測試擋。
+    """
+
+    def _target(self, name: str) -> str:
+        import re
+        text = MAKEFILE
+        m = re.search(rf"^{name}:.*?$\n((?:\t.*\n|\n)*)", text, re.M)
+        assert m, f"Makefile 沒有 {name} target"
+        return m.group(0)
+
+    def test_update_builds_every_feature_file_models_depend_on(self):
+        from engine.backtest.summary import MODEL_KEYS
+        from engine.models.bundle import features_file_for_key
+
+        needed = {features_file_for_key(k) for k in MODEL_KEYS}
+        update = self._target("update").splitlines()[0]
+        for path in needed:
+            if "v3" in path:
+                assert "features-v3" in update, (
+                    f"有模型用 {path}，但 update 沒有 features-v3 —— "
+                    "那些模型會靜默停在舊日期")
+            else:
+                assert "features" in update
+
+    def test_labels_target_builds_every_label_file(self):
+        """每個 build_labels* 模組都要被 labels target 呼叫到。"""
+        from pathlib import Path
+        modules = sorted(p.stem for p in
+                         (Path(__file__).resolve().parents[1] / "engine" / "models")
+                         .glob("build_labels*.py"))
+        body = self._target("labels")
+        missing = [m for m in modules if m not in body]
+        assert not missing, f"這些標的沒有被 `make labels` 建到：{missing}"

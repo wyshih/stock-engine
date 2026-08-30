@@ -298,6 +298,10 @@ MODEL_SPACES = {
     "m1_base_up20":   {"max_features": [15, 20], "max_depth": [10, 20]},
     "m2_nomkt_up20":  {"max_features": [15, 20], "max_depth": [10, 20]},
     "m6_base_nobear": {"max_features": [15, 20], "max_depth": [10, 20]},
+    # m1 的路徑感知版（2026-08-27 實驗）：同一組特徵、同一家族，只換標的
+    # （label_up20 再加「20 日內不曾跌破 −10% 收盤」）。空間刻意與 m1 相同，
+    # 這樣兩者的差異只能來自標的，不會混進調參的運氣。
+    "m1_mdd10":       {"max_features": [15, 20], "max_depth": [10, 20]},
     # v3 家族：518 欄。depth 這次才第一次有對照 —— norf 那 7 組全部固定在 30
     # v3 的 leaf 固定 400：norf 最佳解，且我們上一輪 v3 實測 400 (0.6004) 略勝
     # 200 (0.5997)。
@@ -309,6 +313,7 @@ MODEL_SPACES = {
 # 所以 CSV 仍會記錄實際用的值，日後回查得到。
 MODEL_FIXED_PARAMS = {
     "m1_base_up20":   {"class_weight": None, "min_samples_leaf": 200},
+    "m1_mdd10":       {"class_weight": None, "min_samples_leaf": 200},
     "m2_nomkt_up20":  {"class_weight": None, "min_samples_leaf": 200},
     "m6_base_nobear": {"class_weight": None, "min_samples_leaf": 200},
     "m3_v3_up20":     {"class_weight": None, "min_samples_leaf": 400},

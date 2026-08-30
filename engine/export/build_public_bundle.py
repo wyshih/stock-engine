@@ -6,12 +6,13 @@
 
 產出（預設寫到 ../dashboard/public_data/）：
 
-    price_test.parquet     該期間全市場 OHLCV（前端的圖表與指標都由這份現算）
-    scores_test.parquet    5 個模型 × 該期間每日每股的分數（long format）
+    price_test.parquet     該期間全市場 OHLCV，另多帶 20 個交易日供驗證訊號結果
+    scores_test_m*.parquet 各模型該期間每日每股的分數（一個模型一個檔）
     pattern_hits.parquet   148 條說法的命中矩陣，int8，該期間全市場
                            —— 前端因此不需要 96 欄特徵值，也不需要 TA-Lib
     pattern_stats.json     148 條說法的**全市場全歷史**條件統計（含對照組 baseline）
-    sigcurve_m*.csv ×5     各模型 val_sel 門檻曲線（前端滑桿旁的數字讀這個）
+    sigcurve_m*.csv.gz     各模型 val_sel（2024H2）門檻曲線，整條 gzip、不抽樣
+                           —— 統計母體與 price/scores 的測試期不重疊，見 manifest
     backtest_summary.csv   絕對門檻版 + 訊號數對齊版（每日前 1.5%）兩張表
     stock_list.parquet     代號 / 名稱 / 市場 / 產業
     manifest.json          期間、模型與門檻、產生時間、資料口徑、免責聲明
@@ -32,6 +33,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import logging
 from datetime import datetime
@@ -41,7 +43,8 @@ import pandas as pd
 
 from engine.backtest import summary as summary_mod
 from engine.backtest.summary import MATCHED_TOP_PCT, MODEL_KEYS
-from engine.models.bundle import CHOSEN_THRESHOLDS, score_path, sigcurve_path
+from engine.models.bundle import CHOSEN_THRESHOLDS, model_label, sigcurve_path
+from engine.models.score_source import combined_scores
 from engine.paths import DATA_DIR, PROJECT_ROOT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -52,11 +55,26 @@ TEST_START = "2025-02-01"
 TEST_END = "2026-07-31"
 SPLITS = ("test", "test2")
 
+# 訊號止於 TEST_END，但價格多帶這麼多個交易日 —— 標的看的是「未來 20 個交易日」，
+# 價格跟訊號同時截斷的話，期間最後那批訊號在站上只看得到中途的回檔，
+# 會被誤讀成模型失準（4739 那次就是）。
+LOOKAHEAD_TRADING_DAYS = 20
+
 DEFAULT_OUT = PROJECT_ROOT.parent / "dashboard" / "public_data"
 
-# GitHub 對單檔 > 100MB 直接拒收，>50MB 會警告。留一點餘裕。
-MAX_FILE_MB = 90
-MAX_TOTAL_MB = 200
+# 前端滑桿的刻度：0.50 ~ 1.00，每 1% 一格。曲線只需要抽樣到這些點上
+# —— 前端唯一會查的就是這 51 個值，比這更細的解析度沒有人看得到。
+SLIDER_MIN = 0.50
+SLIDER_MAX = 1.00
+SLIDER_STEP = 0.01
+SLIDER_GRID = [round(SLIDER_MIN + i * SLIDER_STEP, 2)
+               for i in range(int(round((SLIDER_MAX - SLIDER_MIN) / SLIDER_STEP)) + 1)]
+
+# GitHub 對單檔 > 100MB 直接拒收，>50MB 會警告。曲線整條匯出（不抽樣），
+# 目前最大單檔約 18MB、總量約 106MB。上限貼著實際用量抓餘裕，
+# 多出來的東西要能被問到，不是隨便放寬。
+MAX_FILE_MB = 30
+MAX_TOTAL_MB = 140
 
 
 DISCLAIMER = (
@@ -66,46 +84,92 @@ DISCLAIMER = (
 CAVEATS = [
     "資料源為 TWSE / TPEx 官方端點，不含已下市股票 —— 全部統計都帶生存偏差，數字偏樂觀。",
     "測試期（2025-02~2026-07）不在訓練期內，但門檻是在 2024 下半年的 val_sel 上由人挑的。",
-    "5 個模型全部是 Round 4 切分：train 2020-01~2023-11、val 2024、test 2025-02~2026-07，兩個交界各留一個月 embargo。",
+    "6 個模型全部是 Round 4 切分：train 2020-01~2023-11、val 2024、test 2025-02~2026-07，兩個交界各留一個月 embargo。",
+    "m1_mdd10 的標的多一個條件：買進後 20 個交易日內最低收盤不得跌破 −10%，其餘 5 個只看上漲天數。",
     "回測口徑 dedup=False（每筆超過門檻的訊號獨立進場），與挑門檻時看的曲線同一把尺。",
     "出場規則：獲利 15% 後啟動移動停利、從最高收盤回落 10% 出場、固定停損 20%。",
     "148 條技術說法的統計是全市場全歷史，不是個股自己的統計，也沒有納入產業與籌碼結構。",
 ]
 
 
+# 契約改過之後被取代的產物 —— 不清掉的話會殘留在 out_dir，被算進體積、
+# 也會讓讀資料包的人以為那還是有效的檔案（2026-08-27 稽核 MEDIUM-3）。
+SUPERSEDED_OUTPUTS = ("scores_test.parquet",) + tuple(
+    f"sigcurve_{k}.csv" for k in
+    ("m1_base_up20", "m2_nomkt_up20", "m3_v3_up20",
+     "m6_base_nobear", "m8_v3_nobear", "m1_mdd10"))
+
+
 # ── 各項產出 ──────────────────────────────────────────────────────────────────
+
+def price_end_date(all_dates: pd.Series) -> pd.Timestamp:
+    """價格要帶到 TEST_END 之後第 LOOKAHEAD_TRADING_DAYS 個交易日（不足就給到底）。"""
+    after = sorted(d for d in all_dates.unique() if d > pd.Timestamp(TEST_END))
+    if not after:
+        return pd.Timestamp(TEST_END)
+    return after[min(LOOKAHEAD_TRADING_DAYS, len(after)) - 1]
+
+
+def lookahead_days(dates: pd.Series) -> int:
+    """實際帶到 TEST_END 之後的交易日數 —— 不足 LOOKAHEAD_TRADING_DAYS 時會少於它。"""
+    return int(dates[dates > pd.Timestamp(TEST_END)].nunique())
+
 
 def build_price(out_dir: Path) -> pd.DataFrame:
     price = pd.read_parquet(DATA_DIR / "price.parquet")
     price["date"] = pd.to_datetime(price["date"])
-    price = price[(price["date"] >= TEST_START) & (price["date"] <= TEST_END)]
+    end = price_end_date(price["date"])
+    price = price[(price["date"] >= TEST_START) & (price["date"] <= end)]
     price = price.sort_values(["stock_id", "date"]).reset_index(drop=True)
     price.to_parquet(out_dir / "price_test.parquet", index=False)
+    extra = lookahead_days(price["date"])
     logger.info(f"price_test：{len(price):,} 列 / {price['stock_id'].nunique():,} 檔 / "
-                f"{price['date'].nunique()} 個交易日")
+                f"{price['date'].nunique()} 個交易日"
+                f"（含 TEST_END 之後 {extra} 天供驗證訊號結果）")
     return price
 
 
 def build_scores(out_dir: Path) -> pd.DataFrame:
+    """各模型在測試期的分數，一個模型一個檔。
+
+    分數來源一律走 `score_source.combined_scores()` —— 回測也走同一支，
+    兩邊才不會像 2026-08-27 那次一樣各自組出不同的訊號宇宙。
+    """
     frames = []
     for key in MODEL_KEYS:
-        for split in SPLITS:
-            path = score_path(key, split)
-            if not path.exists():
-                raise SystemExit(
-                    f"找不到 {path}。5 個模型的分數檔要先有才能出資料包 —— 請先 `make train`。")
-            part = pd.read_parquet(path)
-            part["date"] = pd.to_datetime(part["date"])
-            part = part[(part["date"] >= TEST_START) & (part["date"] <= TEST_END)]
-            part["model"] = key
-            frames.append(part[["date", "stock_id", "model", "score"]])
+        part = combined_scores(key, SPLITS, TEST_START, TEST_END)
+        if part.empty:
+            raise SystemExit(
+                f"{key} 在測試期沒有任何分數 —— 請先 `make train`。")
+        part["model"] = key
+        frames.append(part[["date", "stock_id", "model", "score"]])
     scores = pd.concat(frames, ignore_index=True)
-    scores = scores.drop_duplicates(subset=["date", "stock_id", "model"])
     scores["model"] = scores["model"].astype("category")
     scores["score"] = scores["score"].astype("float32")
     scores = scores.sort_values(["date", "model", "stock_id"]).reset_index(drop=True)
-    scores.to_parquet(out_dir / "scores_test.parquet", index=False)
-    logger.info(f"scores_test：{len(scores):,} 列 / {scores['model'].nunique()} 個模型")
+
+    # 分數必須蓋滿宣告的期間。少了最後幾天不會報錯，只會讓最新的訊號悄悄消失
+    # —— 4739 那次就是這樣被誤讀的，所以在這裡擋下來。
+    price_days = pd.to_datetime(
+        pd.read_parquet(out_dir / "price_test.parquet", columns=["date"])["date"])
+    # 價格會多帶 TEST_END 之後的日子，分數只需要蓋到 TEST_END 為止。
+    in_period = sorted(set(price_days[price_days <= pd.Timestamp(TEST_END)]))
+    if not in_period:
+        raise SystemExit("price_test.parquet 在宣告期間內沒有任何交易日。")
+    for key in MODEL_KEYS:
+        model_days = set(scores[scores["model"] == key]["date"])
+        missing = [d for d in in_period if d not in model_days]
+        if missing:
+            raise SystemExit(
+                f"{key} 的分數少了 {len(missing)} 個交易日"
+                f"（最早 {missing[0].date()}、最晚 {missing[-1].date()}）。"
+                "請先執行 `python -m engine.models.score_recent` 補分數。")
+
+    for key in MODEL_KEYS:
+        part = scores[scores["model"] == key].drop(columns=["model"])
+        part.reset_index(drop=True).to_parquet(
+            out_dir / f"scores_test_{key}.parquet", index=False)
+        logger.info(f"scores_test_{key}：{len(part):,} 列")
     return scores
 
 
@@ -165,17 +229,39 @@ def build_pattern_stats(out_dir: Path) -> dict:
     return payload
 
 
-def copy_sigcurves(out_dir: Path) -> list[str]:
-    copied = []
+def export_sigcurves(out_dir: Path) -> list[str]:
+    """匯出門檻曲線 —— 整條原樣 gzip，不抽樣。
+
+    使用者要求資料包保留完整曲線（每個訊號一列），不做任何取樣。這裡壓縮的是
+    **原始位元組**，解開後與來源檔逐位元組相同 —— 壓縮不是取樣，一列都沒少。
+
+    用 gzip 是因為這幾個檔佔資料包 70%（六條共 94MB），而且每次重出內容會整個
+    改寫；不壓的話 public repo 每更新一次就永久多長 ~100MB 的 git 歷史。
+    壓完約剩 32%。`pandas.read_csv` 認得 .gz，前端不用改任何一行。
+    """
+    written = []
     for key in MODEL_KEYS:
         src = sigcurve_path(key)
         if not src.exists():
             raise SystemExit(f"找不到 {src}，請先 `make curve`。")
-        dst = out_dir / f"sigcurve_{key}.csv"
-        dst.write_bytes(src.read_bytes())
-        copied.append(dst.name)
-    logger.info(f"sigcurve：複製 {len(copied)} 個檔")
-    return copied
+        # 挑定的門檻一定要落在滑桿刻度上，否則前端根本拉不到它。
+        chosen = CHOSEN_THRESHOLDS[key]
+        if chosen not in SLIDER_GRID:
+            raise SystemExit(
+                f"{key} 挑定的門檻 {chosen} 不在滑桿刻度上"
+                f"（{SLIDER_MIN}~{SLIDER_MAX} step {SLIDER_STEP}）。"
+                "請把 CHOSEN_THRESHOLDS 改成刻度上的值。")
+        dst = out_dir / f"sigcurve_{key}.csv.gz"
+        raw = src.read_bytes()
+        dst.write_bytes(gzip.compress(raw, compresslevel=6))
+        # 立刻驗回來 —— 壓縮壞掉的資料包比沒有更糟，而且要到前端才會發現。
+        if gzip.decompress(dst.read_bytes()) != raw:
+            raise SystemExit(f"{dst.name} 壓縮後解不回原檔，中止。")
+        written.append(dst.name)
+        logger.info(f"  {key}：{len(raw)/1048576:.1f}MB → "
+                    f"{dst.stat().st_size/1048576:.1f}MB")
+    logger.info(f"sigcurve：{len(written)} 個檔，整條 gzip（不抽樣）")
+    return written
 
 
 def copy_stock_list(out_dir: Path) -> None:
@@ -225,16 +311,49 @@ def check_size(out_dir: Path) -> None:
                          + "\n推不上 GitHub 的資料包不要產。請縮小期間或欄位後重跑。")
 
 
+def _lookahead_note(price: pd.DataFrame) -> str:
+    """如實描述多帶了幾天 —— 不足時不可以照抄 LOOKAHEAD_TRADING_DAYS。
+
+    2026-08-27 稽核抓到：note 無條件寫「多帶 20 個交易日」，實際只有 15 天，
+    對外宣告與資料不符。
+    """
+    actual = lookahead_days(price["date"])
+    base = (f"價格多帶 {actual} 個交易日（目標 {LOOKAHEAD_TRADING_DAYS} 天），"
+            "讓期間最後那批訊號也看得到後續走勢；那段沒有分數。")
+    if actual < LOOKAHEAD_TRADING_DAYS:
+        short = LOOKAHEAD_TRADING_DAYS - actual
+        base += (f" ⚠️ 還差 {short} 個交易日才滿 {LOOKAHEAD_TRADING_DAYS} 天，"
+                 "期間末尾的訊號結果尚未定案，前端會顯示為空白而非虧損。")
+    return base
+
+
 def write_manifest(out_dir: Path, price: pd.DataFrame, scores: pd.DataFrame) -> None:
     manifest = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "period": {"start": TEST_START, "end": TEST_END,
-                   "trading_days": int(price["date"].nunique())},
+                   "trading_days": int(price[price["date"] <= TEST_END]["date"].nunique())},
+        "price_period": {
+            "start": TEST_START,
+            "end": price["date"].max().date().isoformat(),
+            "lookahead_trading_days": lookahead_days(price["date"]),
+            "lookahead_target": LOOKAHEAD_TRADING_DAYS,
+            "note": _lookahead_note(price)},
         "coverage": {"stocks": int(price["stock_id"].nunique()),
                      "price_rows": int(len(price)), "score_rows": int(len(scores))},
         "split": "Round 4（train 2020-01~2023-11 / val_es 2024H1 / val_sel 2024H2 / "
                  "test 2025-02~2025-12 / test2 2026-01~2026-07）",
-        "models": [{"key": k, "threshold": CHOSEN_THRESHOLDS[k]} for k in MODEL_KEYS],
+        # name 讓公開站的選單顯示「全特徵·漲勢」而不是 m1_base_up20；
+        # key 仍是唯一識別，檔名與 backtest_summary 都用它。
+        "models": [{"key": k, "name": model_label(k), "threshold": CHOSEN_THRESHOLDS[k]}
+                   for k in MODEL_KEYS],
+        # 曲線的統計母體是 val_sel，與上面的 period 完全不重疊。檔名不帶 split，
+        # 直接讀資料包的人分辨不出來，所以在這裡明講（2026-08-27 稽核 MEDIUM-1）。
+        "sigcurve": {
+            "split": "val_sel",
+            "start": "2024-07-01",
+            "end": "2024-12-31",
+            "note": "sigcurve_*.csv 是**驗證期（2024 下半年）**的門檻曲線，"
+                    "不是測試期統計。門檻就是在這條曲線上由人挑的。"},
         "data_source": "TWSE MI_INDEX / TPEx otc 官方端點（不使用 yfinance）",
         "backtest": {
             "implementation": "engine.backtest.backtest.simulate()/performance()",
@@ -250,6 +369,18 @@ def write_manifest(out_dir: Path, price: pd.DataFrame, scores: pd.DataFrame) -> 
     logger.info("manifest.json 已寫入")
 
 
+def clear_superseded(out_dir: Path) -> list[str]:
+    removed = []
+    for name in SUPERSEDED_OUTPUTS:
+        path = out_dir / name
+        if path.exists():
+            path.unlink()
+            removed.append(name)
+    if removed:
+        logger.info(f"清掉被取代的舊產物：{', '.join(removed)}")
+    return removed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -262,6 +393,7 @@ def main() -> None:
 
     out_dir: Path = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
+    clear_superseded(out_dir)
     tmp_dir = out_dir / "_tmp"
     tmp_dir.mkdir(exist_ok=True)
 
@@ -278,7 +410,7 @@ def main() -> None:
     build_pattern_hits(out_dir)
     if not args.skip_stats:
         build_pattern_stats(out_dir)
-    copy_sigcurves(out_dir)
+    export_sigcurves(out_dir)
     copy_stock_list(out_dir)
     if not args.skip_backtest:
         build_backtest_summary(out_dir, tmp_dir)

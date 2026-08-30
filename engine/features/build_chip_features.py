@@ -14,6 +14,9 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# 增量時要多讀幾根 K 當暖身。最長的視窗是 rolling(60)，取 80 留餘裕。
+WARMUP_BARS = 80
+
 # 專案路徑一律走 code/paths.py（唯一來源），不要各檔自行推導
 from engine.paths import DATA_DIR, PROJECT_ROOT  # noqa: E402
 
@@ -203,6 +206,7 @@ def run(full: bool = False, dry_run: bool = False) -> pd.DataFrame:
     if full or existing.empty:
         new_dates = set(pd.to_datetime(chip["date"]).dt.normalize().unique())
         logger.info("全量重算")
+        new_dates = None
     else:
         existing["date"] = pd.to_datetime(existing["date"])
         done = set(existing["date"].dt.normalize().unique())
@@ -213,7 +217,21 @@ def run(full: bool = False, dry_run: bool = False) -> pd.DataFrame:
             return pd.DataFrame()
         logger.info(f"增量補算 {len(new_dates)} 個交易日")
 
-    chip = chip[pd.to_datetime(chip["date"]).dt.normalize().isin(new_dates)].copy()
+    # 只留新日期會讓每支股票只剩幾列，rolling(60) / shift(5) 全部吐 NaN ——
+    # 2026-08-29 踩過：一次 update 就把 5 天 7 欄燒成全 NaN，其中 short_ratio /
+    # margin_ratio 是模型前 15 重要的特徵，而且 upsert 的 done 集合讓後續 update
+    # 永遠不會回頭修它。所以要多讀 WARMUP_BARS 個交易日當暖身，算完只寫回新日期。
+    chip["date"] = pd.to_datetime(chip["date"]).dt.normalize()
+    if new_dates is not None:
+        calendar = sorted(chip["date"].unique())
+        first_new = min(new_dates)
+        pos = calendar.index(first_new) if first_new in calendar else 0
+        window_start = calendar[max(0, pos - WARMUP_BARS)]
+        chip = chip[chip["date"] >= window_start].copy()
+        logger.info(f"  暖身視窗自 {pd.Timestamp(window_start).date()} 起"
+                    f"（{WARMUP_BARS} 根 K），算完只寫回 {len(new_dates)} 天")
+    else:
+        chip = chip.copy()
 
     price = _read("price")
     sl = _read("stock_list")
@@ -222,6 +240,8 @@ def run(full: bool = False, dry_run: bool = False) -> pd.DataFrame:
         stock_shares = sl.set_index("stock_id")["shares_outstanding"].dropna().to_dict()
 
     df = _compute_chip(chip, price, stock_shares)
+    if new_dates is not None:
+        df = df[pd.to_datetime(df["date"]).dt.normalize().isin(new_dates)]
     logger.info(f"產出 {len(df)} 筆（{df['stock_id'].nunique()} 支）")
 
     if dry_run:

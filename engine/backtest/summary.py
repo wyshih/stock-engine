@@ -24,7 +24,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from engine.models.bundle import CHOSEN_THRESHOLDS, score_path
+from engine.models.bundle import CHOSEN_THRESHOLDS
+from engine.models.score_source import combined_scores
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,11 @@ HOLD_VARIANTS = (None, 20)
 # 2026-08-22 使用者從原本的十個裡選定這五個，砍掉的 m4/m5/m7/m9/m10 全是
 # 去大盤／去波動變體（BACKTEST_LOG #28：它們在絕對門檻下的高報酬來自門檻效應）。
 # 代號中間有空號是刻意的 —— 沿用原編號，才對得上 BACKTEST_LOG 裡的 ①②③⑥⑧。
+# 2026-08-28 加入 m1_mdd10：與 m1 同特徵同搜尋空間，只換標的
+# （label_up20 再要求「20 日內最低收盤不跌破 −10%」）。使用者要求公開站也要有。
 MODEL_KEYS = (
     "m1_base_up20", "m2_nomkt_up20", "m3_v3_up20",
-    "m6_base_nobear", "m8_v3_nobear",
+    "m6_base_nobear", "m8_v3_nobear", "m1_mdd10",
 )
 
 # 內部驗證的預設區間＝Round 4 的樣本外全段
@@ -58,21 +61,9 @@ def combined_score_file(key: str, tmp_dir: Path, splits: tuple[str, ...],
     `simulate()` 一次只讀一個分數檔，但 Round 4 的 test 只有 11 個月、test2 只有
     7 個月，分開看區間太短。
     """
-    frames = []
-    for split in splits:
-        path = score_path(key, split)
-        if path.exists():
-            frames.append(pd.read_parquet(path))
-    if not frames:
-        raise SystemExit(
-            f"找不到 {key} 的任何分數檔（{', '.join(splits)}）——請先 `make train`")
-    out = pd.concat(frames, ignore_index=True)
-    out["date"] = pd.to_datetime(out["date"])
-    if start:
-        out = out[out["date"] >= start]
-    if end:
-        out = out[out["date"] <= end]
-    out = out.drop_duplicates(subset=["date", "stock_id"]).sort_values(["date", "stock_id"])
+    # 分數來源與公開資料包共用 `score_source.combined_scores()`，
+    # 兩邊各組一份的話會像 2026-08-27 那次一樣，同一模型同一門檻給出不同訊號數。
+    out = combined_scores(key, tuple(splits), start, end)
     path = tmp_dir / f"_bt_{key}.parquet"
     out.to_parquet(path, index=False)
     return path

@@ -145,15 +145,18 @@ features-v3:  ## 建 v3 特徵集（features_v3.parquet，520 欄）
 		--out $${TMPDIR:-/tmp}/features_v3.parquet
 	cp $${TMPDIR:-/tmp}/features_v3.parquet data/features_v3.parquet
 
-labels:  ## 算 label（labels.parquet / labels_nobear.parquet）
+labels:  ## 算 label（labels.parquet / labels_nobear.parquet / labels_mdd10.parquet）
 	$(PY) -m engine.models.build_labels
 	$(PY) -m engine.models.build_labels_nobear
+	$(PY) -m engine.models.build_labels_mdd
 
 scores:  ## 對新日期補算 5 個模型的分數（前端歷史曲線用）
 	$(PY) -m engine.models.score_recent
 
 # ── 日常更新 ────────────────────────────────────────────────────────────
-update: data revenue promote validate features labels scores  ## 日常增量更新
+# features-v3 一定要在 features 之後、labels 之前 —— 少了它 m3/m8 會靜默停在
+# 舊日期，score_recent 只會說「已是最新」，不報錯（2026-08-29 稽核抓到）。
+update: data revenue promote validate features features-v3 labels scores  ## 日常增量更新
 	@echo ""
 	@echo "  全部更新完成，make app 看最新推薦"
 	@echo ""

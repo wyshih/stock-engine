@@ -40,12 +40,13 @@ class TestScope:
                 f"CAVEATS 宣稱 {n} 個模型，實際是 {actual} 個。"
                 f"這條字串會顯示在公開網站上")
 
-    def test_covers_exactly_five_models(self):
-        assert len(bpb.MODEL_KEYS) == 5
+    def test_covers_exactly_six_models(self):
+        assert len(bpb.MODEL_KEYS) == 6
 
     def test_every_model_has_a_chosen_threshold(self):
         """門檻讀 bundle.CHOSEN_THRESHOLDS，不硬編在 export 裡（CLAUDE.md 規則 7）。"""
-        assert set(bpb.MODEL_KEYS) == set(CHOSEN_THRESHOLDS)
+        from engine.models.bundle import EXPERIMENTAL_KEYS
+        assert set(bpb.MODEL_KEYS) == set(CHOSEN_THRESHOLDS) - EXPERIMENTAL_KEYS
 
     def test_period_is_round4_test_span(self):
         assert bpb.TEST_START == "2025-02-01"
@@ -116,14 +117,20 @@ class TestManifest:
         manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
 
         # Assert
-        assert {m["key"]: m["threshold"] for m in manifest["models"]} == CHOSEN_THRESHOLDS
+        from engine.models.bundle import EXPERIMENTAL_KEYS
+        shipped = {k: v for k, v in CHOSEN_THRESHOLDS.items()
+                   if k not in EXPERIMENTAL_KEYS}
+        assert {m["key"]: m["threshold"] for m in manifest["models"]} == shipped
 
 
 class TestMissingInputs:
     def test_build_scores_fails_loudly_when_untrained(self, tmp_path, monkeypatch):
         """分數檔還沒產生時要明講「先 make train」，不可以默默產出半包。"""
-        # Arrange
-        monkeypatch.setattr(bpb, "score_path", lambda key, split: tmp_path / f"{key}_{split}.parquet")
+        # Arrange —— 分數來源已抽到 score_source，兩個消費端共用同一支。
+        from engine.models import score_source as ss
+        monkeypatch.setattr(ss, "score_path",
+                            lambda key, split: tmp_path / f"{key}_{split}.parquet")
+        monkeypatch.setattr(ss, "live_score_path", lambda key: tmp_path / f"{key}_live.parquet")
 
         # Act / Assert
         with pytest.raises(SystemExit, match="make train"):
