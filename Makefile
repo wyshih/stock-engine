@@ -138,17 +138,29 @@ features: suspect-jumps  ## 增量建特徵（features.parquet，380 欄）
 	$(PY) -m engine.features.build_features
 
 # build_v3_features.py 拒絕直接寫進 data/（產出必須先落在暫存），所以先產再搬。
+	$(PY) -m engine.features.pipeline_graph --stamp features
+
 features-v3:  ## 建 v3 特徵集（features_v3.parquet，520 欄）
 	$(PY) -m engine.features.v3.audit
 	$(PY) -m engine.features.v3.build_v3_features \
 		--audit data/feature_audit.csv --volproxy data/volproxy.csv \
 		--out $${TMPDIR:-/tmp}/features_v3.parquet
 	cp $${TMPDIR:-/tmp}/features_v3.parquet data/features_v3.parquet
+	$(PY) -m engine.features.pipeline_graph --stamp features_v3
 
 labels:  ## 算 label（labels.parquet / labels_nobear.parquet / labels_mdd10.parquet）
 	$(PY) -m engine.models.build_labels
 	$(PY) -m engine.models.build_labels_nobear
 	$(PY) -m engine.models.build_labels_mdd
+	@for n in labels labels_nobear labels_mdd10; do \
+		$(PY) -m engine.features.pipeline_graph --stamp $$n; done
+
+check-stale:  ## 檢查有沒有衍生檔的上游變過（增量只看日期，抓不到這種）
+	$(PY) -m engine.features.pipeline_graph --check
+
+invalidate:  ## 清掉 FROM 日期起的衍生檔資料，逼下次重算（make invalidate FROM=2026-08-24）
+	@test -n "$(FROM)" || { echo "用法：make invalidate FROM=2026-08-24"; exit 1; }
+	$(PY) -m engine.features.pipeline_graph --invalidate $(FROM)
 
 scores:  ## 對新日期補算 5 個模型的分數（前端歷史曲線用）
 	$(PY) -m engine.models.score_recent

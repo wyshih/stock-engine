@@ -48,8 +48,11 @@ ML 稽核也確認過無洩漏（doc/AUDIT_20260728.md §1.1）。**本模組沿
 """
 from __future__ import annotations
 
+import argparse
 import logging
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -192,7 +195,15 @@ def _apex_bars(sup: dict, res: dict, current_i: int) -> float:
     return apex
 
 
-def _build_one(grp: pd.DataFrame) -> pd.DataFrame:
+def _build_one(grp: pd.DataFrame,
+               seed: tuple[pd.Timestamp, int] | None = None) -> pd.DataFrame:
+    """`seed`：(錨點日期, 該日距上次突破幾根)，用來接續 `tl_days_since_break`。
+
+    這個特徵的回看**沒有上限**（可能是 500 根前的突破），再大的暖身視窗都不保證
+    看得到。而且暖身視窗前段的趨勢線本身還沒成形（LOOKBACK=120 根），那段偵測到
+    的突破與全量算的不一致 —— 所以錨點取「新日期的前一根」，那一天的值是既有檔案
+    裡算好的、可信的，從它往後續算即可。存的是 log1p(gap)，expm1 還原成根數。
+    """
     n = len(grp)
     high = grp["high"].to_numpy(float)
     low = grp["low"].to_numpy(float)
@@ -297,13 +308,82 @@ def _build_one(grp: pd.DataFrame) -> pd.DataFrame:
             if i - bi <= FALSE_BREAK_WINDOW and 0 < bi < i and close[i] < bline
         )
 
+    if seed is not None:
+        _reseed_days_since_break(out, grp["date"].to_numpy(), *seed)
+
     res_df = pd.DataFrame(out)
     res_df.insert(0, "stock_id", grp["stock_id"].values)
     res_df.insert(0, "date", grp["date"].values)
     return res_df
 
 
-def build() -> pd.DataFrame:
+def _reseed_days_since_break(out: dict, dates: np.ndarray,
+                             anchor_date: pd.Timestamp, gap: int) -> None:
+    """從錨點往後重算 `tl_days_since_break`，蓋掉暖身區推得的不可靠值。"""
+    pos = int(np.searchsorted(dates, np.datetime64(anchor_date)))
+    if pos >= len(dates) or dates[pos] != np.datetime64(anchor_date):
+        return                      # 這檔在錨點那天沒有資料，維持原樣
+    # ⚠️ 只有「壓力線突破」會重置計數，支撐跌破不算 —— 這與主迴圈裡
+    # `last_break_i = i` 的位置一致（它在 resist 分支內，不在 support 分支）。
+    # 初版兩個都算，1583 在 2026-08-27 的支撐跌破就被誤判成重置。
+    last = pos - int(gap)
+    for i in range(pos, len(dates)):
+        if i > pos and out["tl_resist_break"][i]:
+            last = i
+        out["tl_days_since_break"][i] = np.float32(np.log1p(i - last))
+
+
+# 增量時要往回讀幾根 K：趨勢線取 LOOKBACK(120) 根內的樞紐點，樞紐點本身還要
+# PIVOT_WINDOW + CONFIRM_LAG 根確認，另有 FALSE_BREAK_WINDOW(20) 與 rolling(20)。
+# 取 200 根，比最長相依多出一截餘裕。
+WARMUP_BARS = 200
+
+
+def _existing() -> pd.DataFrame:
+    path = DATA_DIR / "trendline_features.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    out = pd.read_parquet(path)
+    out["date"] = pd.to_datetime(out["date"])
+    return out
+
+
+def _one(args: tuple) -> pd.DataFrame | None:
+    """給行程池用的頂層函式（lambda / closure 不能被 pickle）。"""
+    sid, grp, seed_gap = args
+    if len(grp) < LOOKBACK // 2:
+        return None
+    return _build_one(grp.reset_index(drop=True), seed_gap)
+
+
+def _seed_gaps(existing: pd.DataFrame,
+               first_new: pd.Timestamp) -> dict[str, tuple[pd.Timestamp, int]]:
+    """每檔在「第一個新日期之前」最後一根的 (日期, 距上次突破根數)。
+
+    錨點刻意取新日期的前一根而不是暖身視窗起點 —— 那一天的值是既有檔案算好的，
+    暖身區前段推得的值則不可信（趨勢線還沒成形）。
+    """
+    if existing.empty or "tl_days_since_break" not in existing.columns:
+        return {}
+    before = existing[existing["date"] < first_new]
+    if before.empty:
+        return {}
+    last = (before.sort_values("date").groupby("stock_id")
+            .agg(d=("date", "last"), v=("tl_days_since_break", "last")))
+    last = last[last["v"].notna()]
+    return {sid: (r.d, int(round(float(np.expm1(r.v))))) for sid, r in last.iterrows()}
+
+
+def build(full: bool = False, jobs: int = 0) -> pd.DataFrame:
+    """算趨勢線特徵。
+
+    預設是增量的：只重算「有新資料的那幾天」，每檔往回多讀 WARMUP_BARS 根 K 當
+    暖身，算完只留新日期。2026-08-29 之前這支沒有增量路徑，每次 `make update`
+    都把 2,069 檔 × 全部歷史重算一遍，佔掉整個更新流程四分之一的時間。
+
+    每檔股票彼此獨立，所以用行程池平行（jobs=0 表示自動取 CPU 數的一半，
+    留餘裕給其他程式）。
+    """
     logger.info("讀取 price.parquet…")
     px = pd.read_parquet(DATA_DIR / "price.parquet",
                          columns=["date", "stock_id", "high", "low", "close", "volume"])
@@ -311,25 +391,65 @@ def build() -> pd.DataFrame:
     px = px[~px["stock_id"].isin(INDEX_IDS)]
     px = px.sort_values(["stock_id", "date"]).reset_index(drop=True)
 
-    frames = []
-    ids = px["stock_id"].unique()
-    for k, (sid, grp) in enumerate(px.groupby("stock_id", sort=False), 1):
-        if len(grp) < LOOKBACK // 2:
-            continue
-        frames.append(_build_one(grp.reset_index(drop=True)))
-        if k % 200 == 0:
-            logger.info(f"  {k}/{len(ids)} 檔")
+    new_dates: set | None = None
+    if not full:
+        existing = _existing()
+        if not existing.empty:
+            done = set(existing["date"].unique())
+            new_dates = set(px["date"].unique()) - done
+            if not new_dates:
+                logger.info("trendline_features.parquet 已是最新")
+                return pd.DataFrame()
+            calendar = sorted(px["date"].unique())
+            pos = calendar.index(min(new_dates))
+            window_start = calendar[max(0, pos - WARMUP_BARS)]
+            px = px[px["date"] >= window_start]
+            logger.info(f"增量補算 {len(new_dates)} 個交易日，"
+                        f"暖身自 {pd.Timestamp(window_start).date()} 起"
+                        f"（{WARMUP_BARS} 根 K）")
+    if new_dates is None:
+        logger.info("全量重算")
+
+    seeds: dict[str, int] = {}
+    if new_dates is not None:
+        seeds = _seed_gaps(existing, pd.Timestamp(min(new_dates)))
+        logger.info(f"  接續 {len(seeds)} 檔的 tl_days_since_break 狀態")
+    groups = [(sid, grp, seeds.get(sid)) for sid, grp in px.groupby("stock_id", sort=False)]
+    n_jobs = jobs or max(1, (os.cpu_count() or 2) // 2)
+    logger.info(f"  {len(groups)} 檔，{n_jobs} 個行程")
+
+    if n_jobs == 1:
+        frames = [f for f in map(_one, groups) if f is not None]
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as pool:
+            frames = [f for f in pool.map(_one, groups, chunksize=16) if f is not None]
 
     out = pd.concat(frames, ignore_index=True)
+    if new_dates is not None:
+        out = out[out["date"].isin(new_dates)]
     n_feat = len([c for c in out.columns if c not in ("date", "stock_id")])
     logger.info(f"完成：{len(out)} 列 × {n_feat} 個特徵")
     return out
 
 
 def main() -> None:
-    out = build()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--full", action="store_true", help="不管既有檔案，整段重算")
+    parser.add_argument("--jobs", type=int, default=0, help="行程數，0＝自動")
+    args = parser.parse_args()
+
+    out = build(full=args.full, jobs=args.jobs)
+    if out.empty:
+        return
     path = DATA_DIR / "trendline_features.parquet"
-    out.to_parquet(path, index=False)
+    if args.full:
+        out.to_parquet(path, index=False)
+    else:
+        existing = _existing()
+        combined = pd.concat([existing, out], ignore_index=True) if not existing.empty else out
+        combined = (combined.drop_duplicates(subset=["date", "stock_id"], keep="last")
+                            .sort_values(["stock_id", "date"]).reset_index(drop=True))
+        combined.to_parquet(path, index=False)
     logger.info(f"已寫入 {path}")
 
     body = out.drop(columns=["date", "stock_id"])
