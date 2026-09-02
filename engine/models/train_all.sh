@@ -21,6 +21,10 @@
 # ── 調參規定（2026-08-23 使用者指定）───────────────────────────────────────
 # **每一個模型都要用自己的特徵集、自己的 label 跑一輪超參數搜尋，讀自己那份
 #   sweep_{key}_rf.csv。不得共用組態。**
+#
+# ⚠️ m1_steady20 目前是這條規定的**暫時例外**（2026-09-03，使用者指定先看成效）：
+#    借 m1_base_up20 的組態，沒有自己的 sweep CSV。成效好就要照規矩重跑 ——
+#    搜尋位置與轉正步驟寫在階段一那段註解裡。
 # 即使兩個模型的特徵集相同、只差 label，也各搜各的 —— label 換了，最佳組態
 # 就不保證一樣，沿用等於拿別的問題調出來的參數。
 #
@@ -122,14 +126,25 @@ print(math.prod(len(v) for v in space.values()))" 2>/dev/null)
 
 sweep m1_base_up20 "$FEAT_BASE" data/labels.parquet       label_up20  "①原特徵·上漲天數"
 sweep m1_mdd10     "$FEAT_BASE" data/labels_mdd10.parquet label_mdd10 "①原特徵·抗套牢"
-sweep m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲"
+
+# ⚠️ m1_steady20 **暫時不調參**（2026-09-03 使用者指定：時間不夠，先看成效）。
+# 改借 m1_base_up20 的最佳組態（見階段二的 --config-key）。兩者特徵集與搜尋
+# 空間完全相同，只差標的，所以借用是有意義的 —— 但它**不是**依規定調出來的。
+#
+# 要轉正（成效好的話）：把下面這行取消註解、拿掉階段二的 --config-key，重跑本
+# 腳本。bundle 的 `config_source_key` 會從 "m1_base_up20" 變回 None，那是判斷
+# 「這個模型有沒有自己調過參」的唯一依據。
+# sweep m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲"
 
 # ── 階段二：訓練 2 個模型 ─────────────────────────────────────────────────
 # 不傳 --config-round，train_label_variant 就會讀該模型自己的
 # sweep_{key}_rf.csv（規定：不得共用組態）。
 train m1_base_up20 "$FEAT_BASE" data/labels.parquet       label_up20  "①原特徵·上漲天數"
 train m1_mdd10     "$FEAT_BASE" data/labels_mdd10.parquet label_mdd10 "①原特徵·抗套牢"
-train m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲"
+# ⚠️ 暫定：借 m1_base_up20 的組態（max_features=15/max_depth=20/leaf=200，
+# val_sel AUC 0.6088）。轉正時拿掉 --config-key，並把階段一那行取消註解。
+train m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲" \
+      --config-key m1_base_up20
 
 echo ""
 echo "======== [$(date '+%F %T')] 3 個模型全部完成 ========"

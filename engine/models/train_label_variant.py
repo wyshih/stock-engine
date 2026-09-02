@@ -127,6 +127,10 @@ def main() -> None:
                         help="用哪一套切分")
     parser.add_argument("--config-round", type=int, default=DEFAULT_CONFIG_ROUND,
                         help="舊式：整輪共用的 sweep CSV。不給就讀本模型自己那份")
+    parser.add_argument("--config-key", default=None,
+                        help="借用另一個模型的組態（讀 sweep_<CONFIG_KEY>_rf.csv），"
+                             "跳過本模型的調參。只在兩者特徵集與搜尋空間相同時才"
+                             "有意義 —— 會寫進 bundle 的 config_source 留痕")
     parser.add_argument("--drop-prefix", action="append", default=[],
                         help="剔除此前綴的所有特徵，可重複（例：--drop-prefix mkt_）")
     parser.add_argument("--drop-file", default=None,
@@ -134,12 +138,17 @@ def main() -> None:
     args = parser.parse_args()
 
     use_round(args.round)
-    # 每個模型讀自己那份 sweep_{key}_rf.csv（規定：不得共用組態）。
-    # --config-round 只在明確指定時才走舊式共用路徑，供讀取歷史檔案用。
-    params = (best_config("rf", key=args.key) if args.config_round is None
-              else best_config("rf", args.config_round))
-    source = (f"本模型自己的 sweep_{args.key}_rf.csv" if args.config_round is None
-              else f"⚠️ 共用的 Round {args.config_round} 組態")
+    # 組態來源三選一，優先序：--config-key（借用另一個模型）> --config-round
+    # （舊式共用檔，只供讀歷史）> 預設（本模型自己那份，規定的正路）。
+    if args.config_key:
+        params = best_config("rf", key=args.config_key)
+        source = f"⚠️ 借用 {args.config_key} 的 sweep_{args.config_key}_rf.csv"
+    elif args.config_round is not None:
+        params = best_config("rf", args.config_round)
+        source = f"⚠️ 共用的 Round {args.config_round} 組態"
+    else:
+        params = best_config("rf", key=args.key)
+        source = f"本模型自己的 sweep_{args.key}_rf.csv"
     logger.info(f"[{args.key}] Round {args.round} 切分，超參數來自{source}：{params}")
 
     drop_cols = tuple(Path(args.drop_file).read_text().split()) if args.drop_file else ()
@@ -172,6 +181,10 @@ def main() -> None:
         "features_file": Path(args.features).name,
         "stats": data["stats"], "model": model, "arch": None, "params": params,
         "config_round": args.config_round,
+        # 組態借自哪個模型（None＝自己調的）。沒有這一欄的話，日後看到
+        # 這個 bundle 只會以為它有自己的 sweep 結果，而 data/ 底下卻沒有
+        # 對應的 CSV —— 那是查不出原因的矛盾。
+        "config_source_key": args.config_key,
         "score_min": float(val_scores.min()), "score_max": float(val_scores.max()),
         "val_split": CURVE_SPLIT, "n_train": len(data["y_train"]),
         "trained_at": datetime.now().isoformat(timespec="seconds"),

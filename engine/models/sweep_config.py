@@ -9,6 +9,12 @@
 沒有 `--key` 的舊式呼叫（讀 `sweep_round{N}_rf.csv`）保留下來只為了讀取既有的
 歷史檔案，**不可用於新模型**。
 
+例外（2026-09-03 使用者指定）：`train_label_variant.py --config-key OTHER` 可以
+明確借用另一個模型的組態。僅在**特徵集與搜尋空間都相同、只差標的**時才成立 ——
+此時沿用同一組超參數反而讓「差異只能來自標的」更乾淨。借用會寫進 bundle 的
+`config_source_key` 留痕。⚠️ 不要改用「複製一份 sweep_{key}_rf.csv」達成同樣效果：
+那個檔裡的 val_sel AUC 是**別的 label** 算出來的，留著就是日後誤讀的地雷。
+
 ## 為什麼是新檔
 
 `train_label_variant.py`（訓練入口）需要 `best_config()`，而這個函式原本住在
