@@ -4,10 +4,10 @@
 public 展示站是隔壁獨立的 `dashboard/` repo（不是 submodule），
 只吃 `make export-public` 產出的資料包。
 
-**最高原則：任何改動都不可以讓 ①②③⑥⑧ 這 5 個模型變得無法重建。**
+**最高原則：任何改動都不可以讓 m1_base_up20 與 m1_mdd10 這 2 個模型變得無法重建。**
 判斷不確定的時候，選「重建得出來」的那條路。
 
-## 5 個模型
+## 2 個模型
 
 全部 RandomForest、Round 4 切分（train 2020-01~2023-11 / val_es 2024H1 /
 val_sel 2024H2 / test 2025-02~2025-12 / test2 2026-01~2026-07），
@@ -15,29 +15,30 @@ val_sel 2024H2 / test 2025-02~2025-12 / test2 2026-01~2026-07），
 
 | 代號 | 特徵集 | 特徵數 | label | 門檻 |
 |---|---|---|---|---|
-| m1_base_up20 | base | 344 | label_up20 | 0.60 |
-| m2_nomkt_up20 | base − `mkt_*`(12) | 332 | label_up20 | 0.60 |
-| m3_v3_up20 | v3 | 509 | label_up20 | 0.60 |
-| m6_base_nobear | base | 344 | label_nobear | 0.60 |
-| m8_v3_nobear | v3 | 509 | label_nobear | 0.58 |
+| m1_base_up20 | base | 344 | label_up20 | 0.77 |
+| m1_mdd10 | base | 344 | label_mdd10 | 0.68 |
+
+**兩者用同一份特徵集、同一個搜尋空間，只差標的** —— 差異只能來自標的，
+不會混進調參的運氣。`label_mdd10` 是 `label_up20` 再要求「未來 20 個交易日內
+最低收盤不跌破 −10%」，原本標 1 但期間跌破的樣本改標 **0**（不是整列排除）。
 
 **代號中間有空號是刻意的** —— 原本是 5 種特徵集 × 2 種 label = 10 個，
-2026-08-22 使用者選定只留這五個。沿用原編號（①②③⑥⑧）才對得上
-`doc/BACKTEST_LOG.md` 裡的實驗記錄。
+2026-08-22 收到 5 個（①②③⑥⑧），2026-09-02 使用者要求再收到這 2 個。
+沿用原編號（①）才對得上 `doc/BACKTEST_LOG.md` 裡的實驗記錄。
 
-砍掉的 m4/m5/m7/m9/m10 全是「去大盤」或「去波動度」變體：BACKTEST_LOG #28
-證實它們在絕對門檻下的高報酬來自**門檻效應而非模型能力**，訊號數對齊後
-m7、m2 是倒數兩名。m2 保留當「去大盤」的對照組。
-連帶不再需要的：sweep round 6/7 兩輪調參、`drop_volatility.txt`
-（檔案留著，之後想復原 m5/m10 還用得到）。
+2026-09-02 移除的東西，以及為什麼可以一起走：
+- `m2_nomkt_up20`（去大盤）、`m3_v3_up20` / `m8_v3_nobear`（v3 特徵集）、
+  `m6_base_nobear`（去空頭 label）
+- **v3 特徵管線**（`engine/features/v3/`、`features_v3.parquet`、`feature_audit.csv`、
+  `volproxy.csv`、`make features-v3`）—— 只有 m3/m8 在用
+- **`label_nobear`**（`build_labels_nobear.py`、`labels_nobear.parquet`，以及
+  `score_source.py` 裡對 nobear 家族的去空頭過濾）—— 只有 m6/m8 在用
+
+更早砍掉的 m4/m5/m7/m9/m10 全是「去大盤」或「去波動度」變體：BACKTEST_LOG #28
+證實它們在絕對門檻下的高報酬來自**門檻效應而非模型能力**。
 
 門檻寫在 `engine/models/bundle.py` 的 `CHOSEN_THRESHOLDS`，由使用者看
 val_sel 曲線挑定，不是自動算的。
-
-⚠️ **v3 那兩個（m3/m8）重建後特徵數會是 518，不是表上的 509** —— v3 的變體選擇
-依賴資料相依的 `feature_audit.csv`，換官方資料源後必然漂移，不是 bug，也不能
-靠改程式解決。base 與 nomkt 的三個（344/332）不受影響。
-詳見 `doc/EXPERIMENT_STATUS.md`。
 
 ⚠️ **每個模型各自調參，不得共用組態。** 每一個選定的模型都要用**自己的特徵集、
 自己的 label** 跑一輪超參數搜尋，讀自己那份 `data/sweep_{key}_rf.csv`。即使兩個
@@ -131,3 +132,8 @@ test + test2 全段）與 `make export-public`（public 展示，固定 2025-02~
 `init/*.py`、`train_bundles.py` / `train_submodels.py` / `finalists.py`
 （只服務已封存的 r1/r2/r4）、`run_queue.sh`、`data_v2/`。
 它們全部留在舊 repo `stock_committee_norf`，不要重新引入。
+
+2026-09-02 起也包含 **v3 特徵管線**（`engine/features/v3/`）與
+**`build_labels_nobear.py`**：它們在本 repo 的 git 歷史裡，要復原是
+`git show`，不是重寫一份。復原之前先確認真的有模型要用 —— 只有 m3/m8 用 v3、
+只有 m6/m8 用 nobear，那四個模型已依使用者要求移除。

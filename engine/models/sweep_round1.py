@@ -104,18 +104,6 @@ FOREST_FIXED_PARAMS_R2 = {"class_weight": None}
 #      當成最終組態**，而那個值當初只是為了加速。
 #   2. 「排名會轉移」是假設不是事實。搜尋與訓練用同一個樹數就不需要這個假設。
 # 代價是搜尋慢一倍，換掉的是一個沒被驗證的前提。
-# ── Round 5：v3 系列專用（2026-08-16）───────────────────────────────────────
-# v3 有 509 欄，Round 4 選出的 max_features=20 是從 344 欄裡選的（5.8%），
-# 直接沿用等於採樣比例砍三分之一。等比例放大後約 30，故往 20~60 搜。
-# min_samples_leaf 與 max_depth 在 Round 4 的 27 組實測中影響極小（前六名差
-# 0.0005），因此收斂範圍把時間留給真正有訊號的 max_features。
-FOREST_SPACE_R5 = {
-    "max_features": [20, 30, 40, 60],
-    "min_samples_leaf": [200, 400],
-    "max_depth": [30],
-}
-FOREST_FIXED_PARAMS_R5 = {"class_weight": None}   # n_estimators 走 FOREST_FIXED 的 300
-
 FOREST_SPACE_R4 = {
     "max_features": [10, 15, 20],
     "min_samples_leaf": [200, 400, 500],
@@ -274,50 +262,38 @@ def prepare(features_path: Path, intersect_with: Path | None,
 
 
 # ── 每個模型自己的搜尋空間（2026-08-23 使用者逐個確認）─────────────────────
-# 規定：每個模型各自調參，不得共用組態。空間以 norf 舊 repo 的最佳解為中心
-# 往外給格子 —— 那些最佳解是從封存 bundle 直接讀出來的：
-#     m1 / m2 / m6（base 家族）  max_features=20, min_samples_leaf=200, max_depth=15
-#     m3 / m8（v3 家族）         max_features=20, min_samples_leaf=400, max_depth=30
+# 規定：每個模型各自調參，不得共用組態。空間以 norf 舊 repo 的 base 家族最佳解
+# 為中心往外給格子（max_features=20, min_samples_leaf=200, max_depth=15）——
+# 那個最佳解是從封存 bundle 直接讀出來的。
 #
-# ⚠️ `leaf=100` 與 `depth=10` 都在 norf 搜過的範圍之外（norf 的 leaf 是
-#    200/400/500、depth 是 15/30/45），是刻意往下探。若最佳解落在這兩個邊界上，
-#    代表真正的最佳值可能更小，要再往下搜一輪 —— 別直接當成收斂了。
+# ⚠️ `depth=10` 在 norf 搜過的範圍之外（norf 的 depth 是 15/30/45），是刻意往下探。
+#    若最佳解落在這個邊界上，代表真正的最佳值可能更小，要再往下搜一輪 ——
+#    別直接當成收斂了。
 #
-# 空間相同不代表結果會相同：m1/m2/m6 三者格子一樣，但各自用自己的特徵集與
-# label 搜，選出來的組態很可能不同。這正是「不得共用組態」的意義。
+# 空間相同不代表結果會相同：兩者格子一樣，但各自用自己的 label 搜，選出來的
+# 組態很可能不同。這正是「不得共用組態」的意義。
 MODEL_SPACES = {
-    # base 家族：344 / 332 欄，label_up20 與 label_nobear
+    # 兩個模型同特徵集（base，344 欄）、同空間，**只差標的** ——
+    # m1 是 label_up20，m1_mdd10 再要求「20 日內最低收盤不跌破 −10%」。
+    # 空間刻意相同：這樣兩者的差異只能來自標的，不會混進調參的運氣。
+    #
     # max_depth 從 10/15/20 砍成兩個端點（2026-08-23）：前一輪 7 組實測，
     # depth 10/15/20 的 val_sel 平均分別是 0.6064 / 0.6079 / 0.6067，**差 0.0015**，
     # 但 depth=20 比 depth=10 慢 63%（1,078s vs 662s）。留兩個端點是為了保住
-    # 「淺 vs 深」的對照 —— 萬一在別的特徵集或 label 上 depth 真的有影響，看得出來。
+    # 「淺 vs 深」的對照 —— 萬一在別的標的上 depth 真的有影響，看得出來。
     # min_samples_leaf 固定（2026-08-23）：前一輪 7 組實測，leaf 100 vs 200 的
     # val_sel 平均是 0.6060 vs 0.6074（差 0.0013，三個參數中最小），**耗時只差
     # 1.02 倍**。也就是說它既沒訊號、也不影響速度，留在格子裡純粹讓組數翻倍。
     # 固定值取 200：實測較佳，且與 norf 最佳解一致。
-    "m1_base_up20":   {"max_features": [15, 20], "max_depth": [10, 20]},
-    "m2_nomkt_up20":  {"max_features": [15, 20], "max_depth": [10, 20]},
-    "m6_base_nobear": {"max_features": [15, 20], "max_depth": [10, 20]},
-    # m1 的路徑感知版（2026-08-27 實驗）：同一組特徵、同一家族，只換標的
-    # （label_up20 再加「20 日內不曾跌破 −10% 收盤」）。空間刻意與 m1 相同，
-    # 這樣兩者的差異只能來自標的，不會混進調參的運氣。
-    "m1_mdd10":       {"max_features": [15, 20], "max_depth": [10, 20]},
-    # v3 家族：518 欄。depth 這次才第一次有對照 —— norf 那 7 組全部固定在 30
-    # v3 的 leaf 固定 400：norf 最佳解，且我們上一輪 v3 實測 400 (0.6004) 略勝
-    # 200 (0.5997)。
-    "m3_v3_up20":     {"max_features": [15, 20], "max_depth": [15, 30]},
-    "m8_v3_nobear":   {"max_features": [15, 20], "max_depth": [15, 30]},
+    "m1_base_up20": {"max_features": [15, 20], "max_depth": [10, 20]},
+    "m1_mdd10":     {"max_features": [15, 20], "max_depth": [10, 20]},
 }
 # 搜尋與正式訓練同樹數，且不再覆寫 n_estimators（走 FOREST_FIXED 的 300）
 # 固定但仍寫進 CSV 的參數。min_samples_leaf 在這裡（不在搜尋空間裡），
 # 所以 CSV 仍會記錄實際用的值，日後回查得到。
 MODEL_FIXED_PARAMS = {
-    "m1_base_up20":   {"class_weight": None, "min_samples_leaf": 200},
-    "m1_mdd10":       {"class_weight": None, "min_samples_leaf": 200},
-    "m2_nomkt_up20":  {"class_weight": None, "min_samples_leaf": 200},
-    "m6_base_nobear": {"class_weight": None, "min_samples_leaf": 200},
-    "m3_v3_up20":     {"class_weight": None, "min_samples_leaf": 400},
-    "m8_v3_nobear":   {"class_weight": None, "min_samples_leaf": 400},
+    "m1_base_up20": {"class_weight": None, "min_samples_leaf": 200},
+    "m1_mdd10":     {"class_weight": None, "min_samples_leaf": 200},
 }
 
 
@@ -343,8 +319,6 @@ def search_space(model_name: str, round_no: int, key: str | None = None) -> tupl
         if model_name != "rf":
             raise ValueError(f"Round 4 的表格模型只留 rf，不支援 {model_name}")
         return dict(FOREST_SPACE_R4), dict(FOREST_FIXED_PARAMS_R4)
-    if round_no in (5, 6, 7):   # v3 三種特徵集各自一份 sweep CSV
-        return dict(FOREST_SPACE_R5), dict(FOREST_FIXED_PARAMS_R5)
 
     space = dict(FOREST_SPACE) if model_name in ("rf", "extratrees") else dict(GBM_SPACE)
     if model_name == "lambdarank":

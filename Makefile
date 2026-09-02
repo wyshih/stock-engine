@@ -19,9 +19,9 @@ APP_LOG ?= $(HOME)/Library/Logs/stock_app.log
 # 區域網路 IP（macOS 先問 Wi-Fi 再問有線；取不到就退回 hostname）
 LAN_IP  := $(shell ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $$1}')
 
-MODELS := m1_base_up20 m2_nomkt_up20 m3_v3_up20 m6_base_nobear m8_v3_nobear
+MODELS := m1_base_up20 m1_mdd10
 
-.PHONY: help install bootstrap update data promote revenue validate features features-v3 \
+.PHONY: help install bootstrap update data promote revenue validate features \
         labels scores train curve backtest app app-bg stop restart logs \
         export-public publish-public status test verify-vs-old rebuild-full clean-derived
 
@@ -32,10 +32,10 @@ help:  ## 列出指令
 	@echo "    make app            啟動前端  http://localhost:$(PORT)"
 	@echo "    make status         看各資料檔的最新日期與斷層"
 	@echo ""
-	@echo "  重建這 5 個模型（最高原則：這條路徑必須永遠走得通）"
+	@echo "  重建這 2 個模型（最高原則：這條路徑必須永遠走得通）"
 	@echo "    make bootstrap      從 $(BOOTSTRAP_FROM) 起全量抓取（10~15 小時）"
 	@echo "    make rebuild-full   先刪衍生檔再全量重建特徵與 label"
-	@echo "    make train          序列訓練 5 個模型 + 產門檻曲線（數小時）"
+	@echo "    make train          序列訓練 2 個模型 + 產門檻曲線（數小時）"
 	@echo "    make curve          只產門檻曲線（由人看曲線挑門檻）"
 	@echo "    make backtest       用挑定門檻回測，附訊號數對齊版"
 	@echo ""
@@ -137,22 +137,12 @@ features: suspect-jumps  ## 增量建特徵（features.parquet，380 欄）
 	$(PY) -m engine.features.build_relative_features
 	$(PY) -m engine.features.build_features
 
-# build_v3_features.py 拒絕直接寫進 data/（產出必須先落在暫存），所以先產再搬。
 	$(PY) -m engine.features.pipeline_graph --stamp features
 
-features-v3:  ## 建 v3 特徵集（features_v3.parquet，520 欄）
-	$(PY) -m engine.features.v3.audit
-	$(PY) -m engine.features.v3.build_v3_features \
-		--audit data/feature_audit.csv --volproxy data/volproxy.csv \
-		--out $${TMPDIR:-/tmp}/features_v3.parquet
-	cp $${TMPDIR:-/tmp}/features_v3.parquet data/features_v3.parquet
-	$(PY) -m engine.features.pipeline_graph --stamp features_v3
-
-labels:  ## 算 label（labels.parquet / labels_nobear.parquet / labels_mdd10.parquet）
+labels:  ## 算 label（labels.parquet / labels_mdd10.parquet）
 	$(PY) -m engine.models.build_labels
-	$(PY) -m engine.models.build_labels_nobear
 	$(PY) -m engine.models.build_labels_mdd
-	@for n in labels labels_nobear labels_mdd10; do \
+	@for n in labels labels_mdd10; do \
 		$(PY) -m engine.features.pipeline_graph --stamp $$n; done
 
 check-stale:  ## 檢查有沒有衍生檔的上游變過（增量只看日期，抓不到這種）
@@ -162,13 +152,11 @@ invalidate:  ## 清掉 FROM 日期起的衍生檔資料，逼下次重算（make
 	@test -n "$(FROM)" || { echo "用法：make invalidate FROM=2026-08-24"; exit 1; }
 	$(PY) -m engine.features.pipeline_graph --invalidate $(FROM)
 
-scores:  ## 對新日期補算 5 個模型的分數（前端歷史曲線用）
+scores:  ## 對新日期補算 2 個模型的分數（前端歷史曲線用）
 	$(PY) -m engine.models.score_recent
 
 # ── 日常更新 ────────────────────────────────────────────────────────────
-# features-v3 一定要在 features 之後、labels 之前 —— 少了它 m3/m8 會靜默停在
-# 舊日期，score_recent 只會說「已是最新」，不報錯（2026-08-29 稽核抓到）。
-update: data revenue promote validate features features-v3 labels scores  ## 日常增量更新
+update: data revenue promote validate features labels scores  ## 日常增量更新
 	@echo ""
 	@echo "  全部更新完成，make app 看最新推薦"
 	@echo ""
@@ -245,9 +233,9 @@ bootstrap:  ## 從 $(BOOTSTRAP_FROM) 起全量抓取（依主機分流 + 兩階�
 clean-derived:  ## 刪掉所有衍生檔（特徵 / label / 分數 / 曲線 / 調參結果）
 	@echo "  即將刪除 data/ 底下的衍生檔（原始資料不動）"
 	@rm -fv data/{price,chip,fundamental,talib,swing,market,trendline,relative,revenue}_features.parquet
-	@rm -fv data/features.parquet data/features_v3.parquet
-	@rm -fv data/labels.parquet data/labels_nobear.parquet
-	@rm -fv data/feature_audit.csv data/volproxy.csv
+	@rm -fv data/features.parquet
+	@# labels_mdd10 2026-09-02 前漏在這裡，於是 rebuild-full 之後留著用舊資料算的標的。
+	@rm -fv data/labels.parquet data/labels_mdd10.parquet
 	@rm -fv data/score_*.parquet data/sigcurve_*.csv data/threshold_curve_*
 	@# 調參結果也是衍生檔 —— 它是「用某一份特徵資料調出來的組態」。
 	@# 2026-08-24 稽核抓到：舊版不刪它，於是 `make rebuild-full && make train` 在特徵
@@ -270,17 +258,17 @@ clean-models:  ## 刪掉訓練產物（bundle / 分數 / 曲線），下次 make
 	@echo "  已清空。注意：CHOSEN_THRESHOLDS 裡的門檻是舊模型的，重訓後必須重挑（規則 7）。"
 	@echo ""
 
-rebuild-full: clean-derived features features-v3 labels  ## 先刪衍生檔再全量重建
+rebuild-full: clean-derived features labels  ## 先刪衍生檔再全量重建
 	@echo ""
 	@echo "  重建完成。接著 make train（數小時）"
 	@echo ""
 
 # ── 訓練 ────────────────────────────────────────────────────────────────
 # 一次一個，不並行 —— 10 核機器，RF 內層已吃 6 核，並行只會更慢（CLAUDE.md 規則 10）。
-train:  ## 序列訓練 5 個模型（含 v3 調參與門檻曲線，數小時）
+train:  ## 序列訓練 2 個模型（含各自調參與門檻曲線，數小時）
 	./engine/models/train_all.sh
 
-# 平常不用跑。m1/m2/m6/m7 的組態來自版控的 engine/models/config/sweep_round4_rf.csv
+# 平常不用跑。舊式共用組態來自版控的 engine/models/config/sweep_round4_rf.csv
 # （2026-08-15 在 344 欄上搜出來的，重訓沿用是刻意的）。只有在你想在**新資料**上
 # 重搜 base 組態時才跑這個 —— 27 組、約 15 小時，跑完寫進 data/，
 # best_config() 會自動優先讀 data/ 的新版本。
@@ -293,7 +281,7 @@ sweep-base:  ## 重搜 base 特徵集的超參數（27 組，約 15 小時，平
 # 才沒把錯誤的曲線跑出來。要改出場規則，改 CURRENT_EXIT_RULES 一個地方。
 # 已存在就跳過，與 train_all.sh 的行為一致（那邊第 100 行就是這樣寫的）。
 # ⚠️ 2026-08-26 修正：舊版無條件重跑。而 train_all.sh 在訓練每個模型時**已經
-#    產出曲線了**，所以重建流程跑完 train 再跑 curve，等於把五條曲線重算一遍
+#    產出曲線了**，所以重建流程跑完 train 再跑 curve，等於把每條曲線重算一遍
 #    —— 實測白花約 30 分鐘，結果完全相同（相同輸入、相同程式）。
 # 要強制重算：make curve FORCE=1（改了出場規則或換了分數檔時才需要）。
 curve:  ## 產生 val_sel 門檻曲線（已存在就跳過；FORCE=1 強制重算）
@@ -316,7 +304,7 @@ curve:  ## 產生 val_sel 門檻曲線（已存在就跳過；FORCE=1 強制重�
 # 只比固定門檻會退化成比門檻鬆緊（BACKTEST_LOG #28、CLAUDE.md 規則 9）。
 # 區間預設 test + test2（Round 4 樣本外全段），不跟 public 展示窗口綁在一起。
 # 要縮區間：make backtest ARGS="--start 2026-01-01"
-backtest:  ## 用挑定門檻回測 5 個模型（絕對門檻 + 訊號數對齊）
+backtest:  ## 用挑定門檻回測 2 個模型（絕對門檻 + 訊號數對齊）
 	@mkdir -p data/backtest
 	$(PY) -m engine.backtest.summary --out data/backtest $(ARGS)
 	@column -s, -t data/backtest/backtest_summary.csv

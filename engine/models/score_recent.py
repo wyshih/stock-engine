@@ -15,9 +15,9 @@ stock_id / score，與訓練期分數檔同 schema，前端直接接起來用。
 註：訓練期分數檔只算 label 非空的股票，這裡算全市場，列數會多一些 —— 推論時
 看不到未來的 label，全市場才是對的口徑。
 
-⚠️ 每個模型讀**自己訓練時那一份特徵檔**（bundle 裡的 `features_file`）：
-base 家族是 features.parquet、v3 家族（m3/m8）是 features_v3.parquet。
-餵錯的話缺欄會被訓練期中位數靜默補掉，分數不會報錯但整份是錯的。
+⚠️ 每個模型讀**自己訓練時那一份特徵檔**（bundle 裡的 `features_file`）。
+2026-09-02 移除 v3 家族後現行兩個模型都是 features.parquet，但這層間接刻意留著
+—— 餵錯的話缺欄會被訓練期中位數靜默補掉，分數不會報錯但整份是錯的。
 
 用法：
   python -m engine.models.score_recent            # 補最近 60 個交易日
@@ -61,10 +61,10 @@ def target_dates(feat: pd.DataFrame, days: int) -> list[pd.Timestamp]:
 def group_by_features(keys: list[str]) -> dict[str, list[str]]:
     """{特徵檔名: [模型代號]}。
 
-    五個模型分兩群、用不同的特徵檔訓練（base 3 個、v3 2 個）。原本這裡對所有
-    模型都餵 `--features` 那一份（預設 features.parquet），m3/m8 因此有 41% 的
-    欄位被訓練期中位數填掉，寫進 score_live 的分數整份是錯的。
-    改成問 bundle 自己要哪一份，同一份特徵檔的模型併成一組、只載入一次。
+    2026-09-02 移除 v3 家族後只剩一群，但分組邏輯保留 —— 這支的坑就是出在
+    「對所有模型都餵 `--features` 那一份」：當時 m3/m8 有 41% 的欄位被訓練期
+    中位數填掉，寫進 score_live 的分數整份是錯的，而且不報錯。
+    問 bundle 自己要哪一份才是對的做法，同一份特徵檔的模型併成一組、只載入一次。
     """
     groups: dict[str, list[str]] = {}
     for key in keys:
@@ -98,8 +98,7 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS,
                         help=f"往回補幾個交易日（預設 {DEFAULT_DAYS}）")
     parser.add_argument("--features", default=None,
-                        help="覆寫特徵檔（除錯用）。預設依每個 bundle 自己記的那一份，"
-                             "base 家族讀 features.parquet、v3 家族讀 features_v3.parquet")
+                        help="覆寫特徵檔（除錯用）。預設依每個 bundle 自己記的那一份")
     parser.add_argument("--rebuild", action="store_true",
                         help="忽略既有分數檔，整段重算")
     args = parser.parse_args()

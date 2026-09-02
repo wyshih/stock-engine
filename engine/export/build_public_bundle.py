@@ -84,8 +84,8 @@ DISCLAIMER = (
 CAVEATS = [
     "資料源為 TWSE / TPEx 官方端點，不含已下市股票 —— 全部統計都帶生存偏差，數字偏樂觀。",
     "測試期（2025-02~2026-07）不在訓練期內，但門檻是在 2024 下半年的 val_sel 上由人挑的。",
-    "6 個模型全部是 Round 4 切分：train 2020-01~2023-11、val 2024、test 2025-02~2026-07，兩個交界各留一個月 embargo。",
-    "m1_mdd10 的標的多一個條件：買進後 20 個交易日內最低收盤不得跌破 −10%，其餘 5 個只看上漲天數。",
+    "2 個模型都是 Round 4 切分：train 2020-01~2023-11、val 2024、test 2025-02~2026-07，兩個交界各留一個月 embargo。",
+    "兩者用同一份特徵集，只差標的：m1_base_up20 只看未來 20 日的上漲天數；m1_mdd10 再要求期間最低收盤不跌破 −10%。",
     "回測口徑 dedup=False（每筆超過門檻的訊號獨立進場），與挑門檻時看的曲線同一把尺。",
     "出場規則：獲利 15% 後啟動移動停利、從最高收盤回落 10% 出場、固定停損 20%。",
     "148 條技術說法的統計是全市場全歷史，不是個股自己的統計，也沒有納入產業與籌碼結構。",
@@ -94,10 +94,19 @@ CAVEATS = [
 
 # 契約改過之後被取代的產物 —— 不清掉的話會殘留在 out_dir，被算進體積、
 # 也會讓讀資料包的人以為那還是有效的檔案（2026-08-27 稽核 MEDIUM-3）。
-SUPERSEDED_OUTPUTS = ("scores_test.parquet",) + tuple(
-    f"sigcurve_{k}.csv" for k in
-    ("m1_base_up20", "m2_nomkt_up20", "m3_v3_up20",
-     "m6_base_nobear", "m8_v3_nobear", "m1_mdd10"))
+#
+# 2026-09-02 起也含**被移除模型**的每模型產物（m2/m3/m6/m8）：那些檔是上一次
+# 匯出留在 out_dir 的，MODEL_KEYS 縮短之後不會再被覆寫，只會安靜地留著，
+# 讓 public 站以為那幾個模型還在。刻意寫死代號而不是掃 glob —— glob 會連
+# 「這次還沒寫出來的」也一起刪掉，順序一錯就把有效產物清了。
+RETIRED_MODEL_KEYS = ("m2_nomkt_up20", "m3_v3_up20", "m6_base_nobear", "m8_v3_nobear")
+SUPERSEDED_OUTPUTS = (
+    ("scores_test.parquet",)
+    # 舊契約的未壓縮曲線（現行是 sigcurve_{k}.csv.gz）
+    + tuple(f"sigcurve_{k}.csv" for k in MODEL_KEYS + RETIRED_MODEL_KEYS)
+    # 被移除模型的每模型產物
+    + tuple(f"scores_test_{k}.parquet" for k in RETIRED_MODEL_KEYS)
+    + tuple(f"sigcurve_{k}.csv.gz" for k in RETIRED_MODEL_KEYS))
 
 
 # ── 各項產出 ──────────────────────────────────────────────────────────────────

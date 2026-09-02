@@ -58,8 +58,8 @@ class TestCleanDerived:
         body = _target_body("clean-derived")
 
         # Assert
-        for expected in ("features.parquet", "features_v3.parquet",
-                         "labels.parquet", "labels_nobear.parquet"):
+        for expected in ("features.parquet",
+                         "labels.parquet", "labels_mdd10.parquet"):
             assert expected in body, f"clean-derived 不再刪 {expected}"
 
     def test_warns_about_bundles(self):
@@ -123,6 +123,9 @@ class TestUpdateCoversEveryModel:
     2026-08-29 稽核抓到兩個漏登記：`features-v3` 不在 update 裡，於是 m3/m8 靜默
     停在舊日期（score_recent 只會說「已是最新」，不報錯）；`labels_mdd10` 不在
     labels 裡。這類漏登記不會有任何錯誤訊息，只能靠測試擋。
+
+    2026-09-02 移除 v3 家族後只剩一份特徵檔，但這條檢查照留 —— 它是從
+    MODEL_KEYS 反推的，下次再開第二份特徵集時會自己抓到漏登記。
     """
 
     def _target(self, name: str) -> str:
@@ -139,12 +142,12 @@ class TestUpdateCoversEveryModel:
         needed = {features_file_for_key(k) for k in MODEL_KEYS}
         update = self._target("update").splitlines()[0]
         for path in needed:
-            if "v3" in path:
-                assert "features-v3" in update, (
-                    f"有模型用 {path}，但 update 沒有 features-v3 —— "
-                    "那些模型會靜默停在舊日期")
-            else:
-                assert "features" in update
+            # 檔名 features_X.parquet → 對應的 target 是 features-X（features 本身
+            # 就叫 features）。寫死對照表的話，新增特徵集時這條就抓不到了。
+            target = path.removesuffix(".parquet").replace("_", "-")
+            assert target in update, (
+                f"有模型用 {path}，但 `make update` 沒有 {target} —— "
+                "那些模型會靜默停在舊日期")
 
     def test_labels_target_builds_every_label_file(self):
         """每個 build_labels* 模組都要被 labels target 呼叫到。"""

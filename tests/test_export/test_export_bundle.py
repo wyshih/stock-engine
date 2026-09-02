@@ -40,8 +40,13 @@ class TestScope:
                 f"CAVEATS 宣稱 {n} 個模型，實際是 {actual} 個。"
                 f"這條字串會顯示在公開網站上")
 
-    def test_covers_exactly_six_models(self):
-        assert len(bpb.MODEL_KEYS) == 6
+    def test_covers_exactly_the_two_shipped_models(self):
+        """2026-09-02 起只出貨 m1_base_up20 與 m1_mdd10（使用者要求）。
+
+        寫死代號而不是只比個數 —— 個數對得上但換了模型，公開站就換了內容而
+        沒有任何測試變紅。
+        """
+        assert bpb.MODEL_KEYS == ("m1_base_up20", "m1_mdd10")
 
     def test_every_model_has_a_chosen_threshold(self):
         """門檻讀 bundle.CHOSEN_THRESHOLDS，不硬編在 export 裡（CLAUDE.md 規則 7）。"""

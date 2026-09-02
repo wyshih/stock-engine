@@ -89,5 +89,7 @@ class TestBestConfig:
     def test_missing_csv_names_both_locations(self, data_dir):
         """缺檔的錯誤訊息要講清楚找過哪裡，否則沒人知道該去哪補。"""
         # Act / Assert
-        with pytest.raises(FileNotFoundError, match="sweep_m8_v3_nobear_rf.csv"):
-            sc.best_config("rf", key="m8_v3_nobear")
+        # 用一個不存在的代號，而不是某個真模型 —— 真模型哪天有了 CSV，
+        # 這條就會從「測缺檔訊息」變成「測讀檔」，而且不會有人發現。
+        with pytest.raises(FileNotFoundError, match="sweep_m99_bogus_rf.csv"):
+            sc.best_config("rf", key="m99_bogus")

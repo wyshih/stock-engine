@@ -10,9 +10,9 @@
 
   原始資料   price / chip / fundamental / revenue / exright / stock_list
              → 列數、日期範圍、共同鍵的逐列數值
-  特徵       9 個特徵檔 + features.parquet(380 欄) + features_v3.parquet(520 欄)
+  特徵       9 個特徵檔 + features.parquet(380 欄)
              → 欄位集合相同、共同列數值差 < TOLERANCE
-  label      labels.parquet / labels_nobear.parquet → 逐列全等
+  label      labels.parquet / labels_mdd10.parquet → 逐列全等
   模型       bundle 的 AUC 與 val_sel 門檻曲線
              → **不比 pkl bytes**：RF 有隨機性，同樣的資料重訓也不會 byte 相同
 
@@ -79,8 +79,9 @@ FEATURE_FILES = [
     "swing_features", "market_features", "trendline_features", "relative_features",
     "revenue_features",
 ]
-MERGED_FEATURES = {"features": 380, "features_v3": 520}
-LABEL_FILES = {"labels": 3_327_632, "labels_nobear": 2_060_418}
+MERGED_FEATURES = {"features": 380}
+# labels_nobear 隨 m6/m8 於 2026-09-02 移除，舊 repo 的基準列數 2,060,418 留作紀錄。
+LABEL_FILES = {"labels": 3_327_632}
 MODEL_KEYS = tuple(CHOSEN_THRESHOLDS)
 
 OK, FAIL, SKIP, NOTE = "✅", "❌", "⏭ ", "📌"
@@ -336,8 +337,9 @@ def check_features(report: Report, old_data: Path) -> None:
 
 
 # 封存 bundle 實際使用的特徵數（從 models/_pre_official_backup/bundle_*.pkl 的
-# `cols` 讀出來的，不是推算）。base 兩組換資料源後仍然對得上；v3 三組對不上，
-# 原因見下方 check_model_feature_counts 的說明。
+# `cols` 讀出來的，不是推算）。base 換資料源後仍然對得上。
+# nomkt / v3 / v3nomkt / v3nomv 的基準值留在這裡當紀錄 —— 那些模型已移除，
+# 但基準是「當年封存 bundle 的事實」，日後想復原時省得再挖一次 pkl。
 BASELINE_FEATURE_COUNTS = {
     "base": 344, "nomkt": 332, "v3": 509, "v3nomkt": 497, "v3nomv": 481,
 }
@@ -346,14 +348,10 @@ BASELINE_FEATURE_COUNTS = {
 def check_model_feature_counts(report: Report, old_data: Path) -> None:
     """重建後，各模型實際會拿到幾個特徵？跟封存 bundle 的基準對照。
 
-    ⚠️ **v3 三組對不上是預期的，不是 bug。** v3 的 sz/raw 變體選擇依賴
-    `data/feature_audit.csv`，那份稽核檔是**資料相依**的（用當時的全市場資料算
-    Spearman 相關），換成官方資料源後有 8 個特徵的分類翻轉、另外多出 `_log_xs`
-    欄，選出來會是 518/506/490 而不是 509/497/481。
-
-    `spec.py` / `transforms.py` 與舊 repo byte-identical，程式沒被改動 —— 這是
-    資料源變更的必然結果。意思是 m3/m4/m5/m8/m9/m10 **無法逐欄重現**封存的模型，
-    只能重新訓練出「同一套方法、新資料下的版本」。base 的 m1/m2/m6/m7 不受影響。
+    2026-09-02 起只剩 base 一組 —— v3 系列隨 m3/m8 移除，`features_v3.parquet`
+    與 `engine/features/v3/` 都不在了。歷史上 v3 三組對不上封存基準是**預期的**：
+    它的 sz/raw 變體選擇依賴資料相依的 `feature_audit.csv`，換官方資料源後選出
+    518/506/490 而非 509/497/481（見 doc/EXPERIMENT_STATUS.md）。
 
     這一項刻意**不**判 FAIL：印出來讓人看見差異，避免有人以為重建成功了。
     """
@@ -363,10 +361,9 @@ def check_model_feature_counts(report: Report, old_data: Path) -> None:
     vol_file = Path(__file__).resolve().parents[1] / "models" / "config" / "drop_volatility.txt"
     dropped_vol = set(vol_file.read_text().split()) if vol_file.exists() else set()
 
-    # 只檢查現行五個模型用得到的三組。v3nomkt / v3nomv 隨 m4/m5/m9/m10 一起砍了，
-    # 基準值留在 BASELINE_FEATURE_COUNTS 供日後復原時對照。
-    for parquet, groups in (("features", ("base", "nomkt")),
-                            ("features_v3", ("v3",))):
+    # 只檢查現行模型用得到的那一組。nomkt / v3 系列的基準值留在
+    # BASELINE_FEATURE_COUNTS 供日後復原時對照。
+    for parquet, groups in (("features", ("base",)),):
         path = DATA_DIR / f"{parquet}.parquet"
         if not path.exists():
             for g in groups:

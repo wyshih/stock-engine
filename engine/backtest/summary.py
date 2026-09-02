@@ -1,4 +1,4 @@
-"""5 個模型的回測彙總表 —— **唯一實作**（CLAUDE.md 規則 8 / 9）。
+"""模型回測彙總表 —— **唯一實作**（CLAUDE.md 規則 8 / 9）。
 
 `make backtest`（內部驗證）與 `make export-public`（public 展示）都呼叫這裡，
 不是各寫一份。這兩條路徑之所以必須共用，是因為本專案已經吃過一次虧：
@@ -40,15 +40,12 @@ MATCHED_TOP_PCT = 0.015
 # 並列才看得出「績效有多少來自持有期拉長、有多少來自選股本身」。
 HOLD_VARIANTS = (None, 20)
 
-# 2026-08-22 使用者從原本的十個裡選定這五個，砍掉的 m4/m5/m7/m9/m10 全是
-# 去大盤／去波動變體（BACKTEST_LOG #28：它們在絕對門檻下的高報酬來自門檻效應）。
-# 代號中間有空號是刻意的 —— 沿用原編號，才對得上 BACKTEST_LOG 裡的 ①②③⑥⑧。
-# 2026-08-28 加入 m1_mdd10：與 m1 同特徵同搜尋空間，只換標的
-# （label_up20 再要求「20 日內最低收盤不跌破 −10%」）。使用者要求公開站也要有。
-MODEL_KEYS = (
-    "m1_base_up20", "m2_nomkt_up20", "m3_v3_up20",
-    "m6_base_nobear", "m8_v3_nobear", "m1_mdd10",
-)
+# 2026-09-02 使用者要求只留這兩個。砍掉的 m2/m3/m6/m8 是「去大盤」「v3 特徵集」
+# 「去空頭 label」三種變體，連同 v3 特徵管線與 `label_nobear` 一併移除。
+# 代號中間有空號是刻意的 —— 沿用原編號，才對得上 BACKTEST_LOG 裡的 ①。
+# 兩者同特徵集、同搜尋空間，**只差標的**：m1 是 label_up20，m1_mdd10 再要求
+# 「20 日內最低收盤不跌破 −10%」。差異只能來自標的，不會混進調參的運氣。
+MODEL_KEYS = ("m1_base_up20", "m1_mdd10")
 
 # 內部驗證的預設區間＝Round 4 的樣本外全段
 DEFAULT_SPLITS = ("test", "test2")
@@ -144,7 +141,7 @@ def build_backtest_summary(out_dir: Path, tmp_dir: Path,
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    parser = argparse.ArgumentParser(description="5 個模型的回測彙總（絕對門檻 + 訊號數對齊）")
+    parser = argparse.ArgumentParser(description="回測彙總（絕對門檻 + 訊號數對齊）")
     parser.add_argument("--out", type=Path, default=Path("data/backtest"))
     parser.add_argument("--splits", default=",".join(DEFAULT_SPLITS),
                         help="逗號分隔，預設 test,test2（Round 4 的樣本外全段）")

@@ -36,7 +36,7 @@ def test_dependency_graph_has_no_dangling_names():
 def test_features_depends_on_chip_features():
     """這條相依就是 2026-08-29 那次沒被追蹤的關係。"""
     assert "chip_features" in pg.DEPENDENCIES["features"]
-    assert "features" in pg.DEPENDENCIES["features_v3"]
+    assert "labels" in pg.DEPENDENCIES["labels_mdd10"]
 
 
 def test_no_stamp_means_not_stale(data_dir):
@@ -71,11 +71,11 @@ def test_require_fresh_aborts_with_actionable_message(data_dir):
 def test_invalidate_removes_rows_from_the_cutoff(data_dir):
     dates = ["2026-01-01", "2026-01-02", "2026-01-05"]
     _write(data_dir, "features", dates)
-    _write(data_dir, "features_v3", dates)
+    _write(data_dir, "labels_mdd10", dates)
 
-    removed = pg.invalidate_from("2026-01-02", names=("features", "features_v3"))
+    removed = pg.invalidate_from("2026-01-02", names=("features", "labels_mdd10"))
 
-    assert removed == {"features": 2, "features_v3": 2}
+    assert removed == {"features": 2, "labels_mdd10": 2}
     left = pd.read_parquet(data_dir / "features.parquet")
     assert pd.to_datetime(left["date"]).max() == pd.Timestamp("2026-01-01")
 

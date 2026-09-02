@@ -1,7 +1,8 @@
 """訓練好的模型 bundle：存檔格式、載入、以及對「某一天」做推論。
 
 前端（streamlit）與 `predict.py` 共用這一支。可用的模型＝`models/` 底下所有
-`bundle_*.pkl`，現行是 ①②③⑥⑧ 五個（base/nomkt/v3 三種特徵集 × 兩種 label，Round 4 切分）。
+`bundle_*.pkl`，現行是 `m1_base_up20` / `m1_mdd10` 兩個（同一份 base 特徵集，
+只差標的；Round 4 切分）。
 
 2026-08-14：MLP / LSTM / 兩種集成全部移除，只保留 RF。集成必須同輪三個單模都在
 才算得出來，單模一移除就不可能存在，因此一併拿掉。要復原得重寫 torch 推論路徑
@@ -12,6 +13,11 @@
 `score_path()` / `sigcurve_path()` 多一條永遠走不到的分支。現在一律掃描
 `models/bundle_*.pkl`，檔名規則與原本的「非內建模型」分支**完全相同**，
 既有的 `score_{key}_{split}.parquet` / `sigcurve_{key}_val_sel.csv` 照樣讀得到。
+
+2026-09-02（使用者要求）：只留 `m1_base_up20` 與 `m1_mdd10`，`m2_nomkt_up20` /
+`m3_v3_up20` / `m6_base_nobear` / `m8_v3_nobear` 連同 v3 特徵集與 `label_nobear`
+一併移除。因此「模型分兩群、用不同特徵檔」的分岔沒有了 —— 剩下的兩個都吃
+`data/features.parquet`。
 
 ⚠️ 防洩漏核心：bundle 裡的 `stats`（median/mean/std）是**訓練期**算出來的那一份，
 推論時一律沿用，不得重算（重算等於把推論期的分布資訊倒灌回標準化）。
@@ -31,38 +37,24 @@ from engine.models.train_single import apply_stats
 logger = logging.getLogger(__name__)
 
 # ── 模型 ↔ 特徵檔 ──────────────────────────────────────────────────────────────
-# 五個模型分成兩群、用**不同的特徵檔**訓練（見 engine/models/train_all.sh）：
-#   base / nomkt（m1/m2/m6）  data/features.parquet     378 欄
-#   v3（m3/m8）               data/features_v3.parquet  518 欄
-# 推論時餵錯檔案不會報錯 —— `reindex` 會把缺的欄位變成 NaN，再被訓練期中位數
-# 補上。實測 m3 餵 features.parquet 有 41% 的欄位被中位數取代，Top-20 只剩
-# 3/20 正確。所以哪一份特徵檔由 bundle 自己說了算，見 `features_file()`。
+# 兩個模型都用 data/features.parquet 訓練（見 engine/models/train_all.sh）。
+# 2026-09-02 之前還有 v3 家族（m3/m8）吃 data/features_v3.parquet，隨那兩個模型
+# 一起移除；`features_file()` 因此永遠回同一份，但**保留這層間接**——
+# bundle 自己說要哪一份特徵檔，是防「餵錯檔案」的那道欄位檢查的依據
+# （`reindex` 會把缺的欄位靜默補成訓練期中位數，不報錯也不警告）。
 BASE_FEATURES_FILE = "features.parquet"
-V3_FEATURES_FILE = "features_v3.parquet"
-
-# v3 特徵轉換產生的後綴（engine/features/v3/spec.py 的 SUFFIX_*）：
-#   _sz  對自己過去 250 日的 z-score
-#   _szx _sz 的當日橫斷面百分位
-#   _xs  原值的當日橫斷面百分位
-# 只有 v3 特徵集會有這些欄位，base/nomkt 一個都沒有。
-V3_COL_SUFFIXES = ("_sz", "_szx", "_xs")
 
 
-# 顯示名稱：<特徵集>·<目標>。兩個維度看名字就分得出誰是誰 ——
-# 特徵集 全特徵(344欄) / 去大盤(332欄) / 擴充(516欄)
-# 目標   漲勢(漲天數≥10) / 避空頭(空頭排列整列排除) / 抗套牢(再要求不跌破10%)
+# 顯示名稱：<特徵集>·<目標>。目前兩個都是全特徵(344欄)，差別在目標 ——
+#   漲勢    未來 20 日上漲天數 >= 10（label_up20）
+#   抗套牢  再要求期間最低收盤不跌破 −10%（label_mdd10）
 #
 # 名字放在這裡而不是 bundle 的 desc：desc 是訓練當下寫進 pickle 的，改名就得重訓
 # 或改二進位檔。這份對照表進版控，改名只是改一行（2026-08-29 使用者要求）。
-# 代號本身刻意不動 —— m1~m8 對應 BACKTEST_LOG 的 ①②③⑥⑧，中間空號是砍掉
-# m4/m5/m7 的痕跡，改代號等於切斷所有歷史紀錄的對照。
+# 代號本身刻意不動 —— m1 對應 BACKTEST_LOG 的 ①，改代號等於切斷歷史紀錄的對照。
 MODEL_NAMES = {
-    "m1_base_up20":   "全特徵·漲勢",
-    "m2_nomkt_up20":  "去大盤·漲勢",
-    "m3_v3_up20":     "擴充·漲勢",
-    "m6_base_nobear": "全特徵·避空頭",
-    "m8_v3_nobear":   "擴充·避空頭",
-    "m1_mdd10":       "全特徵·抗套牢",
+    "m1_base_up20": "全特徵·漲勢",
+    "m1_mdd10":     "全特徵·抗套牢",
 }
 
 
@@ -72,8 +64,8 @@ def model_label(key: str) -> str:
     退回 desc 是給使用者自己丟進 models/ 的模型用的 —— 那些不在對照表裡。
 
     舊版會在名稱前掛 🧪 表示「非內建的實驗模型」。內建／實驗的區分已經隨
-    r1/r2/r4 那組死代號一起移除 —— 現在 ①②③⑥⑧ 就是正式模型，全部掛 🧪 反而
-    誤導。真正的實驗模型（自己丟進 models/ 的）靠 desc 自己說明。
+    r1/r2/r4 那組死代號一起移除 —— 現在 MODEL_NAMES 裡的就是正式模型，全部掛 🧪
+    反而誤導。真正的實驗模型（自己丟進 models/ 的）靠 desc 自己說明。
     """
     if key in MODEL_NAMES:
         return MODEL_NAMES[key]
@@ -123,28 +115,16 @@ def available_keys() -> list[str]:
     return [path.stem[len("bundle_"):] for path in sorted(MODEL_DIR.glob("bundle_*.pkl"))]
 
 
-def _infer_features_file(cols: list[str]) -> str:
-    """沒有 `features_file` 欄位的舊 bundle → 從欄名回推特徵檔。
-
-    ⚠️ 這個回退存在的理由：`features_file` 是 2026-08-24 才加進 bundle 的，
-    在那之前訓練的五個 bundle（models/bundle_*.pkl）裡沒有這個欄位，而重訓
-    要好幾個小時、還會讓門檻全部作廢（CLAUDE.md 規則 7：重訓必須重挑門檻）。
-    所以用欄名判斷而不是要求重訓。
-
-    判準用 v3 轉換的後綴而不是欄數 —— 欄數會隨資料漂移（CLAUDE.md 提到 v3
-    重建後是 518 欄而不是文件上的 509），後綴則是 v3 轉換的定義本身，不會變。
-    """
-    if any(c.endswith(V3_COL_SUFFIXES) for c in cols):
-        return V3_FEATURES_FILE
-    return BASE_FEATURES_FILE
-
-
 def features_file(bundle: dict) -> str:
     """這個 bundle 要用哪一份特徵檔（檔名，不是絕對路徑）。
 
     存檔名而非絕對路徑：bundle 搬到別台機器、或 repo 換位置時仍然對得到。
+
+    `features_file` 是 2026-08-24 才加進 bundle 的，更早訓練的 bundle 沒有這一欄
+    —— 退回 base 特徵檔。2026-09-02 之前這裡還有一段「從欄名的 v3 後綴回推是不是
+    v3 特徵檔」的判斷，隨 v3 特徵集一起移除：現在只剩一份特徵檔，沒得猜。
     """
-    return bundle.get("features_file") or _infer_features_file(bundle["cols"])
+    return bundle.get("features_file") or BASE_FEATURES_FILE
 
 
 def features_path(bundle: dict) -> Path:
@@ -230,35 +210,21 @@ def score_for_date(key: str, feat: pd.DataFrame, date: pd.Timestamp) -> pd.DataF
 
 # 使用者在無去重曲線上挑定的門檻（doc/BACKTEST_LOG.md #24 / #25）。
 # 沒挑過的代號 → `default_threshold()` 退回「訊號率 1%」那一點。
-# 2026-08-15 使用者從 Round 4 各模型的 val_sel 曲線挑定下列五組。
 CHOSEN_THRESHOLDS = {
-    # 2026-08-26 使用者在 val_sel 曲線（dedup=False 訊號層級）上挑定。
+    # 2026-08-26 使用者在 val_sel 曲線（dedup=False 訊號層級）上挑定 m1。
     # 這是 P1 重建後的新模型，先前那組（0.60/0.58）是舊模型的值，已作廢。
+    # 該門檻在驗證期（2024H2）：630 筆訊號、佔比 0.29%、勝率 80.3%、
+    # 平均 +9.29%、中位 +8.55%。
     #
-    # 各門檻在驗證期（2024H2）的表現：
-    #   模型              門檻    訊號數  佔比    勝率    平均      中位
-    #   m1_base_up20      0.77     630   0.29%  80.3%  +9.29%   +8.55%
-    #   m2_nomkt_up20     0.74     333   0.15%  78.4%  +10.29%  +8.34%
-    #   m3_v3_up20        0.70   1,598   0.73%  71.9%  +5.67%   +6.79%
-    #   m6_base_nobear    0.62     301   0.23%  62.5%  +4.35%   +5.28%
-    #   m8_v3_nobear      0.60     313   0.24%  57.5%  +1.27%   +4.30%
-    #
-    # ⚠️ m2 / m6 / m8 在驗證期只有兩三百筆訊號，統計上偏薄。測試期長三倍，
-    #    實際筆數會多一些，但看回測結果時要記得這件事。
-    # ⚠️ 門檻必須落在前端滑桿的刻度上（0.50~1.00，每 1% 一格）—— m6 原本挑 0.625，
-    #    滑桿選不到，2026-08-26 改成 0.62。build_public_bundle 匯出時會擋。
+    # ⚠️ 門檻必須落在前端滑桿的刻度上（0.50~1.00，每 1% 一格）——
+    #    build_public_bundle 匯出時會擋。
     # ⚠️ 每次重訓都必須重挑（規則 7）—— 分數分布會變，絕對值搬不動。
     "m1_base_up20": 0.77,
-    "m2_nomkt_up20": 0.74,
-    "m3_v3_up20": 0.70,
-    "m6_base_nobear": 0.62,
-    "m8_v3_nobear": 0.60,
 
     # 標的是 label_mdd10＝label_up20 再要求「20 日內最低收盤不跌破 −10%」。
-    # 2026-08-28 起納入 MODEL_KEYS，回測表與公開資料包都有它。
     # 2026-08-28 使用者從 val_sel 曲線挑定 0.68：153 筆、勝率 64.7%、
     # 平均 +7.62%、Sharpe 0.316、MDD −6.67%。
-    # ⚠️ 樣本偏薄（正式五個模型最少的是 m6 的 301 筆）。
+    # ⚠️ 樣本偏薄（153 筆，只有 m1 的四分之一），看回測時要記得這件事。
     "m1_mdd10": 0.68,
 }
 

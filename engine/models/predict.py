@@ -7,8 +7,8 @@
 
 用法：
   python -m engine.models.predict --model m1_base_up20
-  python -m engine.models.predict --model m3_v3_up20 --date 2026-06-26
-  python -m engine.models.predict --model m8_v3_nobear --top 30   # Top-N 優先於門檻
+  python -m engine.models.predict --model m1_mdd10 --date 2026-06-26
+  python -m engine.models.predict --model m1_mdd10 --top 30   # Top-N 優先於門檻
 """
 from __future__ import annotations
 
@@ -62,11 +62,12 @@ def attach_stock_info(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_features(path: Path | None = None) -> pd.DataFrame:
-    """載入特徵表。預設是 base 特徵檔，v3 的模型要傳自己那一份。
+    """載入特徵表。預設是 base 特徵檔；要用哪一份一律問 `bundle.features_path()`。
 
-    ⚠️ 不要在這裡寫死 features.parquet 當「唯一的特徵檔」—— m3/m8 是用
-    features_v3.parquet 訓練的，餵錯檔案不會報錯（缺欄被中位數補掉），
-    只會每天安靜地產出錯誤的推薦名單。要用哪一份問 `bundle.features_path()`。
+    ⚠️ 不要在這裡寫死 features.parquet 當「唯一的特徵檔」—— 2026-09-02 移除 v3
+    家族之前，m3/m8 是用 features_v3.parquet 訓練的，餵錯檔案不會報錯（缺欄被
+    中位數補掉），只會每天安靜地產出錯誤的推薦名單。現在雖然只剩一份特徵檔，
+    這個參數仍然由 bundle 決定，不要改回寫死。
     """
     feat = pd.read_parquet(DATA_DIR / "features.parquet" if path is None else path)
     feat["date"] = pd.to_datetime(feat["date"])

@@ -1,10 +1,15 @@
 """bundle 的「該用哪一份特徵檔」推導，以及餵錯特徵檔時的擋人邏輯。
 
-背景（2026-08-24 修）：五個模型分兩群訓練 —— m1/m2/m6 用 features.parquet
+背景（2026-08-24 修）：當時五個模型分兩群訓練 —— m1/m2/m6 用 features.parquet
 （378 欄）、m3/m8 用 features_v3.parquet（518 欄），但推論路徑全部寫死讀
 features.parquet。`_tabular_matrix()` 的 `reindex` 會把缺的欄位變成 NaN，
 再被 `apply_stats()` 用訓練期中位數補上 —— 不報錯、不警告。實測 m3 有 41%
 的欄位被中位數取代，Top-20 只有 3/20 與正確推論重疊。
+
+2026-09-02 移除 v3 家族後只剩一份特徵檔，`_infer_features_file()` 的欄名回推
+也跟著刪了。**擋人邏輯與 `features_file` 這層間接刻意留著並繼續測** ——
+它擋的是「bundle 要的欄位不在收到的特徵表裡」，與有幾份特徵檔無關；
+下次再開第二份特徵集時，這道防護必須已經在。
 
 這裡全部用**假 bundle 與假 DataFrame**，不載入真模型（真 bundle 150MB，
 而且測試不該依賴 models/ 底下有東西）。
@@ -28,7 +33,7 @@ class _FakeModel:
 
 
 def _make_bundle(cols: list[str], features_file: str | None = None,
-                 desc: str = "③v3·上漲天數") -> dict:
+                 desc: str = "①原特徵·上漲天數") -> dict:
     stats = {
         "median": pd.Series(0.0, index=cols),
         "mean": pd.Series(0.0, index=cols),
@@ -50,7 +55,9 @@ def _make_features(cols: list[str], n_rows: int = 3) -> pd.DataFrame:
 
 
 BASE_COLS = [f"rsi_{i}" for i in range(200)]
-V3_COLS = BASE_COLS + [f"natr_{i}_sz" for i in range(50)] + [f"cci_{i}_szx" for i in range(50)]
+# 「bundle 要的欄位比收到的特徵表多」的情境。名稱沿用已移除的 v3 轉換後綴只是
+# 為了與 2026-08-24 那個 bug 的現場一致，測的是缺欄比例不是後綴本身。
+WIDE_COLS = BASE_COLS + [f"natr_{i}_sz" for i in range(50)] + [f"cci_{i}_szx" for i in range(50)]
 
 
 # ── 1. 特徵檔的推導 ───────────────────────────────────────────────────────────
@@ -59,39 +66,28 @@ class TestFeaturesFile:
 
     def test_uses_stored_field_when_present(self):
         # Arrange
-        bundle = _make_bundle(BASE_COLS, features_file="features_v3.parquet")
-        # Act / Assert：欄名看起來像 base，但 bundle 自己說是 v3 → 以 bundle 為準
-        assert bundle_mod.features_file(bundle) == "features_v3.parquet"
+        bundle = _make_bundle(BASE_COLS, features_file="features_other.parquet")
+        # Act / Assert：以 bundle 自己記的那一份為準，不從欄名猜
+        assert bundle_mod.features_file(bundle) == "features_other.parquet"
 
-    def test_infers_v3_from_suffix_when_field_missing(self):
-        assert bundle_mod.features_file(_make_bundle(V3_COLS)) == "features_v3.parquet"
-
-    def test_infers_base_when_no_v3_suffix(self):
+    def test_falls_back_to_base_when_field_missing(self):
+        """2026-08-24 之前訓練的 bundle 沒有 features_file 欄 → 退回 base。"""
         assert bundle_mod.features_file(_make_bundle(BASE_COLS)) == "features.parquet"
 
     def test_features_path_goes_through_paths_module(self):
         from engine.paths import DATA_DIR
-        path = bundle_mod.features_path(_make_bundle(V3_COLS))
-        assert path == DATA_DIR / "features_v3.parquet"
-
-    @pytest.mark.parametrize("suffix", ["_sz", "_szx", "_xs"])
-    def test_every_v3_transform_suffix_is_recognised(self, suffix):
-        """v3 的三種轉換後綴（engine/features/v3/spec.py 的 SUFFIX_*）都算數。"""
-        assert bundle_mod._infer_features_file(
-            ["rsi_14", f"natr_14{suffix}"]) == "features_v3.parquet"
+        path = bundle_mod.features_path(_make_bundle(BASE_COLS))
+        assert path == DATA_DIR / "features.parquet"
 
     def test_real_bundles_resolve_correctly(self):
-        """五個真模型的推導結果（bundle 不在就 skip，CI 上沒有 models/）。"""
+        """兩個真模型的推導結果（bundle 不在就 skip，CI 上沒有 models/）。"""
         expected = {
             "m1_base_up20": "features.parquet",
-            "m2_nomkt_up20": "features.parquet",
-            "m6_base_nobear": "features.parquet",
-            "m3_v3_up20": "features_v3.parquet",
-            "m8_v3_nobear": "features_v3.parquet",
+            "m1_mdd10": "features.parquet",
         }
         available = set(bundle_mod.available_keys())
         if not expected.keys() <= available:
-            pytest.skip("models/ 底下沒有這五個 bundle")
+            pytest.skip("models/ 底下沒有這兩個 bundle")
         for key, want in expected.items():
             assert bundle_mod.features_file_for_key(key) == want, key
 
@@ -100,18 +96,18 @@ class TestFeaturesFile:
 
 class TestMissingColumnGuard:
 
-    def test_v3_bundle_fed_base_features_raises(self):
-        """m3/m8 這種 v3 模型收到 features.parquet → 大量缺欄，必須 raise。"""
+    def test_bundle_fed_a_narrower_feature_table_raises(self):
+        """bundle 要 300 欄、只收到 200 欄（缺 33%）→ 必須 raise，不可靜默補值。"""
         # Arrange
-        bundle = _make_bundle(V3_COLS)
-        feat = _make_features(BASE_COLS)     # 少了 100 個 v3 轉換欄（33%）
+        bundle = _make_bundle(WIDE_COLS, features_file="features_wide.parquet")
+        feat = _make_features(BASE_COLS)     # 少了 100 欄（33%）
 
         # Act / Assert
         with pytest.raises(ValueError) as err:
             bundle_mod.score_single(bundle, feat, pd.Timestamp("2026-08-21"))
         msg = str(err.value)
-        assert "features_v3.parquet" in msg      # 要講清楚該用哪一份
-        assert "③v3·上漲天數" in msg              # 以及是哪個模型
+        assert "features_wide.parquet" in msg    # 要講清楚該用哪一份
+        assert "①原特徵·上漲天數" in msg          # 以及是哪個模型
         assert str(len(feat.columns)) in msg     # 以及收到的表有幾欄
 
     def test_small_gap_still_fills_with_median(self):
@@ -152,7 +148,7 @@ class TestMissingColumnGuard:
 
     def test_empty_day_still_checked_first(self):
         """該日期沒有資料時也要先擋特徵檔 —— 否則餵錯檔會靜悄悄回空表。"""
-        bundle = _make_bundle(V3_COLS)
+        bundle = _make_bundle(WIDE_COLS)
         feat = _make_features(BASE_COLS)
         with pytest.raises(ValueError):
             bundle_mod.score_single(bundle, feat, pd.Timestamp("1999-01-01"))

@@ -79,9 +79,10 @@ def load_score_history(model_key: str) -> pd.DataFrame:
 def features_stem(model_key: str) -> str:
     """該模型訓練時用的特徵檔（去掉 .parquet，給 `load_parquet()` 用）。
 
-    ⚠️ 五個模型分兩群：m1/m2/m6 用 features.parquet、m3/m8 用
-    features_v3.parquet。以前這裡對每個模型都載 features.parquet，v3 的兩個
-    模型有 41% 的欄位被訓練期中位數填掉，前端每天給出的是錯的推薦名單。
+    ⚠️ 一律問 bundle 自己要哪一份，不要寫死 features.parquet。2026-09-02 移除
+    v3 家族之前，m3/m8 是用 features_v3.parquet 訓練的；當時這裡對每個模型都載
+    features.parquet，那兩個模型有 41% 的欄位被訓練期中位數填掉，前端每天給出的
+    是錯的推薦名單 —— 而且不報錯。現在只剩一份特徵檔，這層間接仍然保留。
     """
     return bundle_mod.features_file_for_key(model_key).removesuffix(".parquet")
 

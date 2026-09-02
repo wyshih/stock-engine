@@ -42,9 +42,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "features":             ("price_features", "chip_features", "fundamental_features",
                              "revenue_features", "market_features", "relative_features",
                              "trendline_features"),
-    "features_v3":          ("features",),
     "labels":               ("price",),
-    "labels_nobear":        ("labels", "features"),
     "labels_mdd10":         ("labels", "price"),
 }
 

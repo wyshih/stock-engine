@@ -1,8 +1,12 @@
 """分數來源的契約測試。
 
-2026-08-27：匯出程式把 live 分數直接併進來，破壞了 nobear 家族的股票宇宙，
+2026-08-27：匯出程式把 live 分數直接併進來，破壞了當時 nobear 家族的股票宇宙，
 而回測那條路徑沒跟著改 —— 同一模型同一門檻，網站兩頁差 5~14%。
 這裡把當時全部沒被擋住的行為釘死。
+
+2026-09-02 移除 nobear 家族後，去空頭過濾那兩條測試隨 `_is_nobear()` /
+`_drop_bear_rows()` 一併刪除。「live 只補缺日」這條規矩留著 —— 它才是當時
+那個 bug 的核心，且與 label 是哪一種無關。
 """
 from __future__ import annotations
 
@@ -31,7 +35,6 @@ def fake_sources(monkeypatch, tmp_path):
     live.to_parquet(lp)
     monkeypatch.setattr(ss, "score_path", lambda k, s: tp)
     monkeypatch.setattr(ss, "live_score_path", lambda k: lp)
-    monkeypatch.setattr(ss, "_is_nobear", lambda k: False)
 
 
 def test_live_only_fills_dates_the_training_file_lacks(fake_sources):
@@ -49,27 +52,6 @@ def test_training_scores_win_on_overlapping_rows(fake_sources):
     out = ss.combined_scores("m1", ("test",))
     overlap = out[out["date"] <= "2026-01-02"]
     assert (overlap["score"] == 0.9).all(), "live 蓋掉了訓練期的分數"
-
-
-def test_nobear_models_filter_live_rows(fake_sources, monkeypatch):
-    """nobear 家族的 live 分數必須套上同一份去空頭過濾。"""
-    monkeypatch.setattr(ss, "_is_nobear", lambda k: True)
-    monkeypatch.setattr(ss, "_load_bear_flags", lambda: pd.DataFrame({
-        "date": pd.to_datetime(["2026-01-03"] * 3),
-        "stock_id": ["1101", "1102", "9999"],
-        ss.BEAR_FLAG: [0.0, 1.0, 0.0],          # 1102 是空頭排列
-    }))
-    out = ss.combined_scores("m6", ("test",))
-    day3 = out[out["date"] == "2026-01-03"]
-    assert set(day3["stock_id"]) == {"1101", "9999"}, "空頭排列的股票沒被排除"
-
-
-def test_nobear_detection_reads_bundle_not_the_model_name(monkeypatch):
-    """是不是 nobear 要看 bundle 記的 label_name，不能從代號猜。"""
-    monkeypatch.setattr(ss, "load_by_key", lambda k: {"label_name": "label_nobear"})
-    assert ss._is_nobear("randomly_named_model") is True
-    monkeypatch.setattr(ss, "load_by_key", lambda k: {"label_name": "label_up20"})
-    assert ss._is_nobear("m6_base_nobear") is False
 
 
 def test_missing_score_files_abort_with_actionable_message(monkeypatch, tmp_path):
@@ -102,7 +84,6 @@ def test_earlier_split_wins_when_two_splits_overlap(monkeypatch, tmp_path):
     second.to_parquet(sp)
     monkeypatch.setattr(ss, "score_path", lambda k, s: {"test": fp, "test2": sp}[s])
     monkeypatch.setattr(ss, "live_score_path", lambda k: tmp_path / "none.parquet")
-    monkeypatch.setattr(ss, "_is_nobear", lambda k: False)
     out = ss.combined_scores("m1", ("test", "test2"))
     assert len(out) == 1
     assert out["score"].iloc[0] == 0.9, "後面的切分蓋掉了前面的"

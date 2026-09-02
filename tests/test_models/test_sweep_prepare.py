@@ -26,8 +26,7 @@ class TestSearchSpace:
 
     def test_every_model_has_its_own_space(self):
         # Arrange
-        expected = {"m1_base_up20", "m2_nomkt_up20", "m3_v3_up20",
-                    "m6_base_nobear", "m8_v3_nobear", "m1_mdd10"}
+        expected = {"m1_base_up20", "m1_mdd10"}
 
         # Act / Assert
         from engine.models.bundle import EXPERIMENTAL_KEYS
@@ -84,9 +83,9 @@ class TestLabelMerge:
         dates = pd.to_datetime(["2020-01-02"] * 3)
         feats = pd.DataFrame({"date": dates, "stock_id": ["1101", "2330", "2317"],
                               "ma5": [1.0, 2.0, 3.0]})
-        label_file = tmp_path / "labels_nobear.parquet"
+        label_file = tmp_path / "labels_mdd10.parquet"
         pd.DataFrame({"date": dates[:2], "stock_id": ["1101", "2330"],
-                      "label_nobear": [1, 0]}).to_parquet(label_file)
+                      "label_mdd10": [1, 0]}).to_parquet(label_file)
 
         monkeypatch.setattr(sw, "load_data", lambda p: (feats.copy(), ["ma5"]))
         monkeypatch.setattr(sw, "split_frame", lambda df, name: df)
@@ -95,7 +94,7 @@ class TestLabelMerge:
 
         # Act
         data = sw.prepare(tmp_path / "features.parquet", None, (), (),
-                          label_file, "label_nobear")
+                          label_file, "label_mdd10")
 
         # Assert：merge 成功（第三檔沒有 label，應被 notna 濾掉）
         assert len(data["y_train"]) == 2
@@ -106,10 +105,10 @@ class TestLabelMerge:
         # Arrange
         dates = pd.to_datetime(["2020-01-02"] * 2)
         feats = pd.DataFrame({"date": dates, "stock_id": ["1101", "2330"],
-                              "ma5": [1.0, 2.0], "label_nobear": [1, 0]})
-        label_file = tmp_path / "labels_nobear.parquet"
+                              "ma5": [1.0, 2.0], "label_mdd10": [1, 0]})
+        label_file = tmp_path / "labels_mdd10.parquet"
         pd.DataFrame({"date": dates, "stock_id": ["1101", "2330"],
-                      "label_nobear": [9, 9]}).to_parquet(label_file)
+                      "label_mdd10": [9, 9]}).to_parquet(label_file)
 
         monkeypatch.setattr(sw, "load_data", lambda p: (feats.copy(), ["ma5"]))
         captured = {}
@@ -122,9 +121,9 @@ class TestLabelMerge:
         monkeypatch.setattr(sw, "preprocess", lambda train, others, cols: (None, {}))
 
         # Act
-        sw.prepare(tmp_path / "features.parquet", None, (), (), label_file, "label_nobear")
+        sw.prepare(tmp_path / "features.parquet", None, (), (), label_file, "label_mdd10")
 
         # Assert：用原本那欄（1,0），不是檔案裡的 9
         cols = captured["df"].columns
-        assert "label_nobear_x" not in cols and "label_nobear_y" not in cols
-        assert list(captured["df"]["label_nobear"]) == [1, 0]
+        assert "label_mdd10_x" not in cols and "label_mdd10_y" not in cols
+        assert list(captured["df"]["label_mdd10"]) == [1, 0]
