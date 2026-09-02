@@ -1,15 +1,17 @@
 #!/bin/bash
-# 2 個模型：m1_base_up20（①）與 m1_mdd10（2026-09-02 使用者要求只留這兩個）。
+# 3 個模型：m1_base_up20（①）、m1_mdd10、m1_steady20。
 #
-# 兩者**同一份特徵集、同一個搜尋空間，只差標的** —— 差異只能來自標的，
+# 三者**同一份特徵集、同一個搜尋空間，只差標的** —— 差異只能來自標的，
 # 不會混進調參的運氣。
 #
 # 特徵集：
 #   base   data/features.parquet   344 欄
 #
 # label：
-#   label_up20    labels.parquet         未來 20 日上漲天數 >= 10
-#   label_mdd10   labels_mdd10.parquet   同上，再要求期間最低收盤不跌破 −10%
+#   label_up20      labels.parquet           未來 20 日上漲天數 >= 10
+#   label_mdd10     labels_mdd10.parquet     同上，再要求期間最低收盤不跌破 −10%
+#   label_steady20  labels_steady20.parquet  獨立定義：報酬 > max(1.5×自身波動, 5%)
+#                                            且未來 20 日至少 10 天站上 20 日線
 #
 # 2026-09-02 移除：m2（去大盤）/ m3、m8（v3 特徵集）/ m6、m8（label_nobear）。
 # 連帶 v3 特徵管線（含 audit / volproxy 前處理）與 `build_labels_nobear` 一併刪除。
@@ -59,6 +61,13 @@ prep() {
     else
         $PY -m engine.models.build_labels_mdd || fail "labels_mdd10"
     fi
+
+    step "前處理：label_steady20"
+    if [ -f data/labels_steady20.parquet ]; then
+        echo "  ⏭  已存在，跳過"
+    else
+        $PY -m engine.models.build_labels_steady || fail "labels_steady20"
+    fi
 }
 
 # $1=key $2=特徵檔 $3=label檔 $4=label欄 $5=顯示名 $6...=額外參數
@@ -83,7 +92,7 @@ train() {
     fi
 }
 
-echo "2 個模型序列訓練開始 $(date '+%F %T')　PID=$$"
+echo "3 個模型序列訓練開始 $(date '+%F %T')　PID=$$"
 
 prep
 
@@ -113,13 +122,15 @@ print(math.prod(len(v) for v in space.values()))" 2>/dev/null)
 
 sweep m1_base_up20 "$FEAT_BASE" data/labels.parquet       label_up20  "①原特徵·上漲天數"
 sweep m1_mdd10     "$FEAT_BASE" data/labels_mdd10.parquet label_mdd10 "①原特徵·抗套牢"
+sweep m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲"
 
 # ── 階段二：訓練 2 個模型 ─────────────────────────────────────────────────
 # 不傳 --config-round，train_label_variant 就會讀該模型自己的
 # sweep_{key}_rf.csv（規定：不得共用組態）。
 train m1_base_up20 "$FEAT_BASE" data/labels.parquet       label_up20  "①原特徵·上漲天數"
 train m1_mdd10     "$FEAT_BASE" data/labels_mdd10.parquet label_mdd10 "①原特徵·抗套牢"
+train m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲"
 
 echo ""
-echo "======== [$(date '+%F %T')] 2 個模型全部完成 ========"
+echo "======== [$(date '+%F %T')] 3 個模型全部完成 ========"
 ls -1 models/bundle_m*.pkl | sed 's|models/bundle_||;s|\.pkl||' | sed 's/^/  /'
