@@ -290,6 +290,7 @@ MODEL_SPACES = {
     "m1_base_up20": {"max_features": [15, 20], "max_depth": [10, 20]},
     "m1_mdd10":     {"max_features": [15, 20], "max_depth": [10, 20]},
     "m1_steady20":  {"max_features": [15, 20], "max_depth": [10, 20]},
+    "m1_xsrank20":  {"max_features": [15, 20], "max_depth": [10, 20]},
 }
 # 搜尋與正式訓練同樹數，且不再覆寫 n_estimators（走 FOREST_FIXED 的 300）
 # 固定但仍寫進 CSV 的參數。min_samples_leaf 在這裡（不在搜尋空間裡），
@@ -301,6 +302,7 @@ MODEL_FIXED_PARAMS = {
     # balanced 等於同時換了標的與權重，兩個變因混在一起就比不出東西。
     # 要試權重，等這一輪比完、單獨開一個模型試。
     "m1_steady20":  {"class_weight": None, "min_samples_leaf": 200},
+    "m1_xsrank20":  {"class_weight": None, "min_samples_leaf": 200},
 }
 
 

@@ -72,6 +72,13 @@ prep() {
     else
         $PY -m engine.models.build_labels_steady || fail "labels_steady20"
     fi
+
+    step "前處理：label_xsrank20"
+    if [ -f data/labels_xsrank20.parquet ]; then
+        echo "  ⏭  已存在，跳過"
+    else
+        $PY -m engine.models.build_labels_xsrank || fail "labels_xsrank20"
+    fi
 }
 
 # $1=key $2=特徵檔 $3=label檔 $4=label欄 $5=顯示名 $6...=額外參數
@@ -144,6 +151,11 @@ train m1_mdd10     "$FEAT_BASE" data/labels_mdd10.parquet label_mdd10 "①原特
 # ⚠️ 暫定：借 m1_base_up20 的組態（max_features=15/max_depth=20/leaf=200，
 # val_sel AUC 0.6088）。轉正時拿掉 --config-key，並把階段一那行取消註解。
 train m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲" \
+      --config-key m1_base_up20
+
+# m1_xsrank20（2026-09-03，第二輪）：同樣先借組態看成效。若成效好，依規則
+# 各自調參的步驟與轉正 m1_steady20 完全一樣（見上）。
+train m1_xsrank20  "$FEAT_BASE" data/labels_xsrank20.parquet label_xsrank20 "①原特徵·橫斷面風險調整" \
       --config-key m1_base_up20
 
 echo ""

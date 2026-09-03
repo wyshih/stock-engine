@@ -47,6 +47,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # steady20 不吃 labels.parquet —— 它不是在 label_up20 之上加條件，
     # 而是完全獨立的定義（報酬 vs 自身波動 + 站上 20 日線）。
     "labels_steady20":      ("price",),
+    "labels_xsrank20":      ("price",),
 }
 
 

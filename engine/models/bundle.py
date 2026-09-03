@@ -57,6 +57,7 @@ MODEL_NAMES = {
     "m1_base_up20": "全特徵·漲勢",
     "m1_mdd10":     "全特徵·抗套牢",
     "m1_steady20":  "全特徵·盤整緩漲",
+    "m1_xsrank20":  "全特徵·橫斷面風險調整",
 }
 
 
@@ -244,7 +245,10 @@ CHOSEN_THRESHOLDS = {
 # 「報酬跑贏自身波動 + 站得住 20 日線」把偏差壓到 0.98。
 # **畢業條件**：訓練 → make curve → 使用者看 val_sel 曲線挑門檻 → 三個動作一起做
 # （從這裡移出、加進 CHOSEN_THRESHOLDS、加進 summary.MODEL_KEYS）。
-EXPERIMENTAL_KEYS = frozenset({"m1_steady20"})
+# m1_xsrank20（2026-09-03，第二輪）：label_steady20 死於「正例率隨市場環境
+# 擺盪 2.75 倍，門檻搬不動」。xsrank20 改用當日全市場橫斷面排名（風險調整後
+# 報酬前 20%），正例率釘死在 20.0%（擺盪 1.00 倍，實測）。同樣先看成效。
+EXPERIMENTAL_KEYS = frozenset({"m1_steady20", "m1_xsrank20"})
 FALLBACK_SIGNAL_RATE = 0.01
 
 
