@@ -55,6 +55,7 @@ BASE_FEATURES_FILE = "features.parquet"
 MODEL_NAMES = {
     "m1_base_up20": "全特徵·漲勢",
     "m1_mdd10":     "全特徵·抗套牢",
+    "m1_steady20":  "全特徵·盤整緩漲",
 }
 
 
@@ -228,14 +229,15 @@ CHOSEN_THRESHOLDS = {
     "m1_mdd10": 0.68,
 }
 
-# 沒有實驗模型時 EXPERIMENTAL_KEYS 是空集合。列在這裡是為了讓「每個出貨模型都
-# 有門檻」與「每個模型都有自己的搜尋空間」那兩條測試維持嚴格的集合相等，而不是
-# 被放寬成子集比對 —— 放寬之後，某個模型的門檻被誤刪就再也擋不住了。
-#
-# 2026-09-03：m1_steady20 / m1_xsrank20 兩輪修 label_up20 崩跌偏差的實驗都已
-# 移除（績效比 label_up20 差很多，見 doc/BACKTEST_LOG.md #31 / #32）。程式在
-# git 歷史裡，要復原先讀那兩篇記錄裡「最貴的教訓」。
-EXPERIMENTAL_KEYS = frozenset()
+# m1_steady20（2026-09-04 第三輪定案）：不是 m1 的競爭者，是覆蓋率用途的獨立
+# 第二選單（見 build_labels_steady.py 開頭「這個模型的角色」）。它仍列在
+# EXPERIMENTAL_KEYS、不進 summary.MODEL_KEYS —— 原因不是還沒畢業，是**刻意
+# 不打算進公開資料包**：基準率 10% 讓分數上限貼著 0.44~0.50，碰不到公開站
+# 滑桿的下限 0.50（`build_public_bundle.SLIDER_MIN`），而 summary.MODEL_KEYS
+# 同時餵給 `make backtest` 與 `make export-public`，兩條路徑耦合在一起，
+# 不能只留一邊。這個模型定位是**私有端**（`predict.py` / 本機 streamlit app，
+# 兩者都走 `available_keys()` 掃 `models/` 目錄，不受 MODEL_KEYS 限制）。
+EXPERIMENTAL_KEYS = frozenset({"m1_steady20"})
 
 FALLBACK_SIGNAL_RATE = 0.01
 

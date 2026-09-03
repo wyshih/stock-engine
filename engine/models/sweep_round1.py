@@ -288,6 +288,7 @@ MODEL_SPACES = {
     # 固定值取 200：實測較佳，且與 norf 最佳解一致。
     "m1_base_up20": {"max_features": [15, 20], "max_depth": [10, 20]},
     "m1_mdd10":     {"max_features": [15, 20], "max_depth": [10, 20]},
+    "m1_steady20":  {"max_features": [15, 20], "max_depth": [10, 20]},
 }
 # 搜尋與正式訓練同樹數，且不再覆寫 n_estimators（走 FOREST_FIXED 的 300）
 # 固定但仍寫進 CSV 的參數。min_samples_leaf 在這裡（不在搜尋空間裡），
@@ -295,6 +296,7 @@ MODEL_SPACES = {
 MODEL_FIXED_PARAMS = {
     "m1_base_up20": {"class_weight": None, "min_samples_leaf": 200},
     "m1_mdd10":     {"class_weight": None, "min_samples_leaf": 200},
+    "m1_steady20":  {"class_weight": None, "min_samples_leaf": 200},
 }
 
 

@@ -1,13 +1,13 @@
 #!/bin/bash
-# 2 個模型：m1_base_up20（①）與 m1_mdd10。
+# 3 個模型：m1_base_up20（①）、m1_mdd10、m1_steady20。
 #
-# 兩者**同一份特徵集、同一個搜尋空間，只差標的** —— 差異只能來自標的，
-# 不會混進調參的運氣。
+# 全部**同一份特徵集、同一個搜尋空間** —— 差異只能來自標的，不會混進調參的運氣。
 #
-# 2026-09-03：m1_steady20 / m1_xsrank20 兩輪修 label_up20 崩跌偏差的實驗都已移除
-# （績效比 label_up20 差很多，見 doc/BACKTEST_LOG.md #31 / #32）。程式在 git
-# 歷史裡（`git show 5c452f1:engine/models/build_labels_xsrank.py` 等），
-# 要復原先讀完那兩篇記錄裡「最貴的教訓」再動手。
+# ⚠️ m1_steady20 是「覆蓋率用途的獨立第二選單」，不是 m1 的競爭者，見
+# build_labels_steady.py 開頭的「這個模型的角色」。2026-09-03 曾借用 m1 的組態
+# 快速看過一次成效（Sharpe 0.445、勝率 53.2%，方向對），2026-09-04 決定正式
+# 出貨到私有端（不進公開站，見 bundle.py 的 EXPERIMENTAL_KEYS 註解），所以這輪
+# 走完整的各自調參，不再借用。
 #
 # 特徵集：
 #   base   data/features.parquet   344 欄
@@ -15,6 +15,8 @@
 # label：
 #   label_up20      labels.parquet           未來 20 日上漲天數 >= 10
 #   label_mdd10     labels_mdd10.parquet     同上，再要求期間最低收盤不跌破 −10%
+#   label_steady20  labels_steady20.parquet  獨立定義：報酬 > max(1.5×自身波動, 5%)
+#                                            且未來 20 日至少 10 天站上 20 日線
 #
 # 2026-09-02 移除：m2（去大盤）/ m3、m8（v3 特徵集）/ m6、m8（label_nobear）。
 # 連帶 v3 特徵管線（含 audit / volproxy 前處理）與 `build_labels_nobear` 一併刪除。
@@ -90,7 +92,7 @@ train() {
     fi
 }
 
-echo "2 個模型序列訓練開始 $(date '+%F %T')　PID=$$"
+echo "3 個模型序列訓練開始 $(date '+%F %T')　PID=$$"
 
 prep
 
@@ -120,22 +122,15 @@ print(math.prod(len(v) for v in space.values()))" 2>/dev/null)
 
 sweep m1_base_up20 "$FEAT_BASE" data/labels.parquet       label_up20  "①原特徵·上漲天數"
 sweep m1_mdd10     "$FEAT_BASE" data/labels_mdd10.parquet label_mdd10 "①原特徵·抗套牢"
+sweep m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲"
 
-# ── 階段二：訓練 2 個模型 ─────────────────────────────────────────────────
+# ── 階段二：訓練 3 個模型 ─────────────────────────────────────────────────
 # 不傳 --config-round，train_label_variant 就會讀該模型自己的
 # sweep_{key}_rf.csv（規定：不得共用組態）。
 train m1_base_up20 "$FEAT_BASE" data/labels.parquet       label_up20  "①原特徵·上漲天數"
 train m1_mdd10     "$FEAT_BASE" data/labels_mdd10.parquet label_mdd10 "①原特徵·抗套牢"
-# ⚠️ 暫定：借 m1_base_up20 的組態（max_features=15/max_depth=20/leaf=200，
-# val_sel AUC 0.6088）。轉正時拿掉 --config-key，並把階段一那行取消註解。
-train m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲" \
-      --config-key m1_base_up20
-
-# m1_xsrank20（2026-09-03，第二輪）：同樣先借組態看成效。若成效好，依規則
-# 各自調參的步驟與轉正 m1_steady20 完全一樣（見上）。
-train m1_xsrank20  "$FEAT_BASE" data/labels_xsrank20.parquet label_xsrank20 "①原特徵·橫斷面風險調整" \
-      --config-key m1_base_up20
+train m1_steady20  "$FEAT_BASE" data/labels_steady20.parquet label_steady20 "①原特徵·盤整緩漲"
 
 echo ""
-echo "======== [$(date '+%F %T')] 2 個模型全部完成 ========"
+echo "======== [$(date '+%F %T')] 3 個模型全部完成 ========"
 ls -1 models/bundle_m*.pkl | sed 's|models/bundle_||;s|\.pkl||' | sed 's/^/  /'

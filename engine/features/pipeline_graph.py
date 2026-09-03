@@ -44,6 +44,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
                              "trendline_features"),
     "labels":               ("price",),
     "labels_mdd10":         ("labels", "price"),
+    "labels_steady20":      ("price",),
 }
 
 
