@@ -68,6 +68,12 @@ prep() {
         $PY -m engine.models.build_labels_mdd || fail "labels_mdd10"
     fi
 
+    step "前處理：label_steady20"
+    if [ -f data/labels_steady20.parquet ]; then
+        echo "  ⏭  已存在，跳過"
+    else
+        $PY -m engine.models.build_labels_steady || fail "labels_steady20"
+    fi
 }
 
 # $1=key $2=特徵檔 $3=label檔 $4=label欄 $5=顯示名 $6...=額外參數
