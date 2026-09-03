@@ -19,7 +19,7 @@ APP_LOG ?= $(HOME)/Library/Logs/stock_app.log
 # 區域網路 IP（macOS 先問 Wi-Fi 再問有線；取不到就退回 hostname）
 LAN_IP  := $(shell ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $$1}')
 
-MODELS := m1_base_up20 m1_mdd10 m1_steady20
+MODELS := m1_base_up20 m1_mdd10
 
 .PHONY: help install bootstrap update data promote revenue validate features \
         labels scores train curve backtest app app-bg stop restart logs \
@@ -139,12 +139,10 @@ features: suspect-jumps  ## 增量建特徵（features.parquet，380 欄）
 
 	$(PY) -m engine.features.pipeline_graph --stamp features
 
-labels:  ## 算 label（labels.parquet / labels_mdd10.parquet / labels_steady20.parquet / labels_xsrank20.parquet）
+labels:  ## 算 label（labels.parquet / labels_mdd10.parquet）
 	$(PY) -m engine.models.build_labels
 	$(PY) -m engine.models.build_labels_mdd
-	$(PY) -m engine.models.build_labels_steady
-	$(PY) -m engine.models.build_labels_xsrank
-	@for n in labels labels_mdd10 labels_steady20 labels_xsrank20; do \
+	@for n in labels labels_mdd10; do \
 		$(PY) -m engine.features.pipeline_graph --stamp $$n; done
 
 check-stale:  ## 檢查有沒有衍生檔的上游變過（增量只看日期，抓不到這種）
@@ -237,7 +235,7 @@ clean-derived:  ## 刪掉所有衍生檔（特徵 / label / 分數 / 曲線 / �
 	@rm -fv data/{price,chip,fundamental,talib,swing,market,trendline,relative,revenue}_features.parquet
 	@rm -fv data/features.parquet
 	@# labels_mdd10 2026-09-02 前漏在這裡，於是 rebuild-full 之後留著用舊資料算的標的。
-	@rm -fv data/labels.parquet data/labels_mdd10.parquet data/labels_steady20.parquet data/labels_xsrank20.parquet
+	@rm -fv data/labels.parquet data/labels_mdd10.parquet
 	@rm -fv data/score_*.parquet data/sigcurve_*.csv data/threshold_curve_*
 	@# 調參結果也是衍生檔 —— 它是「用某一份特徵資料調出來的組態」。
 	@# 2026-08-24 稽核抓到：舊版不刪它，於是 `make rebuild-full && make train` 在特徵

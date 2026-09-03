@@ -46,10 +46,8 @@ HOLD_VARIANTS = (None, 20)
 # 兩者同特徵集、同搜尋空間，**只差標的**：m1 是 label_up20，m1_mdd10 再要求
 # 「20 日內最低收盤不跌破 −10%」。差異只能來自標的，不會混進調參的運氣。
 #
-# 2026-09-02 新增的 `m1_steady20` **刻意不在這裡** —— 它還沒有人挑定的門檻
-# （規則 7），沒門檻就沒有「絕對門檻」那一列可跑。訓練 + 產曲線 + 使用者挑定
-# 之後，把它從 bundle.EXPERIMENTAL_KEYS 移出、加進 CHOSEN_THRESHOLDS，
-# 再加到這裡 —— 三個動作要一起做，測試會擋住只做一半的情況。
+# 2026-09-03：m1_steady20 / m1_xsrank20（兩輪修 label_up20 崩跌偏差的實驗）
+# 都已移除 —— 績效比 label_up20 差很多，見 doc/BACKTEST_LOG.md #31 / #32。
 MODEL_KEYS = ("m1_base_up20", "m1_mdd10")
 
 # 內部驗證的預設區間＝Round 4 的樣本外全段

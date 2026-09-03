@@ -276,7 +276,6 @@ MODEL_SPACES = {
     # 三個模型同特徵集（base，344 欄）、同空間，**只差標的** ——
     #   m1_base_up20  label_up20      未來 20 日上漲天數 >= 10
     #   m1_mdd10      label_mdd10     同上，再要求最低收盤不跌破 −10%
-    #   m1_steady20   label_steady20  報酬 > max(1.5×自身波動, 5%) 且站上 20 日線 >= 10 天
     # 空間刻意相同：這樣三者的差異只能來自標的，不會混進調參的運氣。
     #
     # max_depth 從 10/15/20 砍成兩個端點（2026-08-23）：前一輪 7 組實測，
@@ -289,8 +288,6 @@ MODEL_SPACES = {
     # 固定值取 200：實測較佳，且與 norf 最佳解一致。
     "m1_base_up20": {"max_features": [15, 20], "max_depth": [10, 20]},
     "m1_mdd10":     {"max_features": [15, 20], "max_depth": [10, 20]},
-    "m1_steady20":  {"max_features": [15, 20], "max_depth": [10, 20]},
-    "m1_xsrank20":  {"max_features": [15, 20], "max_depth": [10, 20]},
 }
 # 搜尋與正式訓練同樹數，且不再覆寫 n_estimators（走 FOREST_FIXED 的 300）
 # 固定但仍寫進 CSV 的參數。min_samples_leaf 在這裡（不在搜尋空間裡），
@@ -298,11 +295,6 @@ MODEL_SPACES = {
 MODEL_FIXED_PARAMS = {
     "m1_base_up20": {"class_weight": None, "min_samples_leaf": 200},
     "m1_mdd10":     {"class_weight": None, "min_samples_leaf": 200},
-    # class_weight 仍是 None：基準率 10% 比另外兩個低得多，但改成
-    # balanced 等於同時換了標的與權重，兩個變因混在一起就比不出東西。
-    # 要試權重，等這一輪比完、單獨開一個模型試。
-    "m1_steady20":  {"class_weight": None, "min_samples_leaf": 200},
-    "m1_xsrank20":  {"class_weight": None, "min_samples_leaf": 200},
 }
 
 
