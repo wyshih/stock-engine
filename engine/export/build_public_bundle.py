@@ -238,6 +238,57 @@ def build_pattern_stats(out_dir: Path) -> dict:
     return payload
 
 
+def build_fpm_rule_hits(out_dir: Path) -> pd.DataFrame:
+    """fpm 專案挖出的平盤起漲點規則，在測試期的歷史命中買點（int8 起漲旗標）。
+
+    跟 pattern_hits 同一個道理：只出測試期的資料列（TEST_START~TEST_END），
+    2025-02 之前的任何一筆都不能進 public repo（CLAUDE.md 硬性規定）。
+    來源 `data/fpm_rules/rules_hitlist_oos.csv` 本身已經是 walk-forward
+    樣本外命中明細，這裡只是再篩一次期間、換成 public 資料包的檔名。
+    """
+    src = DATA_DIR / "fpm_rules" / "rules_hitlist_oos.csv"
+    if not src.exists():
+        logger.warning("找不到 data/fpm_rules/rules_hitlist_oos.csv，跳過 fpm_rule_hits")
+        return pd.DataFrame()
+
+    hits = pd.read_csv(src, parse_dates=["date"])
+    hits = hits[(hits["date"] >= TEST_START) & (hits["date"] <= TEST_END)]
+    hits["stock_id"] = hits["stock_id"].astype(str)
+    hits["label"] = hits["label"].fillna(0).astype("int8")
+    hits = hits[["date", "stock_id", "rule_id", "r_end", "mdd", "label"]] \
+        .sort_values(["date", "stock_id"]).reset_index(drop=True)
+    hits.to_parquet(out_dir / "fpm_rule_hits.parquet", index=False, compression="zstd")
+    logger.info(f"fpm_rule_hits：{len(hits):,} 列（{TEST_START}~{TEST_END}）")
+    return hits
+
+
+def build_fpm_rule_stats(out_dir: Path) -> dict:
+    """fpm 規則清單 + 統計（勝率/lift/樣本外期望報酬）。統計本身是全歷史 walk-forward
+    彙總數字，跟 pattern_stats 一樣屬於「全市場全歷史統計」，不受 2025-02 這條線
+    限制——受限的是逐筆帶日期的原始紀錄（fpm_rule_hits），不是彙總後的統計量。
+    """
+    src = DATA_DIR / "fpm_rules" / "rules_registry.yaml"
+    if not src.exists():
+        logger.warning("找不到 data/fpm_rules/rules_registry.yaml，跳過 fpm_rule_stats")
+        return {}
+    import yaml
+    registry = yaml.safe_load(src.read_text(encoding="utf-8")) or []
+    payload = {
+        "source": "fpm（獨立的型態探勘專案，見該專案 README/PLAN.md）",
+        "caveats": [
+            "permutation test 從計畫原訂 500 次降到 20 次（跑不完全量，已在 fpm 專案記錄）",
+            "只驗證了一種「平盤」定義（trend_r2 最低五分位），另一種（價格區間窄）驗證中",
+            "資料不含下市股票，存在存活者偏差，結果為上界估計",
+            "單筆命中勝率（嚴格定義）只有 5~7%，不是穩贏訊號，是統計期望值為正的邊際優勢",
+        ],
+        "rules": registry,
+    }
+    (out_dir / "fpm_rule_stats.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
+    logger.info(f"fpm_rule_stats：{len(registry)} 條規則")
+    return payload
+
+
 def export_sigcurves(out_dir: Path) -> list[str]:
     """匯出門檻曲線 —— 整條原樣 gzip，不抽樣。
 
@@ -419,6 +470,8 @@ def main() -> None:
     build_pattern_hits(out_dir)
     if not args.skip_stats:
         build_pattern_stats(out_dir)
+    build_fpm_rule_hits(out_dir)
+    build_fpm_rule_stats(out_dir)
     export_sigcurves(out_dir)
     copy_stock_list(out_dir)
     if not args.skip_backtest:
