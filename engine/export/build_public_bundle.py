@@ -239,12 +239,15 @@ def build_pattern_stats(out_dir: Path) -> dict:
 
 
 def build_fpm_rule_hits(out_dir: Path) -> pd.DataFrame:
-    """fpm 專案挖出的平盤起漲點規則，在測試期的歷史命中買點（int8 起漲旗標）。
+    """fpm 專案挖出的平盤起漲點規則，測試期以來的歷史命中買點（int8 起漲旗標）。
 
-    跟 pattern_hits 同一個道理：只出測試期的資料列（TEST_START~TEST_END），
-    2025-02 之前的任何一筆都不能進 public repo（CLAUDE.md 硬性規定）。
+    下限沿用 TEST_START（2025-02 之前的任何一筆都不能進 public repo，CLAUDE.md
+    硬性規定），但**上限不卡 TEST_END**——TEST_END 是模型 Round 4 官方測試期
+    （test2 到 2026-07-31）的定義，不是我們自己能決定的數字；fpm 資料本來就
+    每天在累積（見 validation_level 分兩級），使用者要求「全部都要看得到」，
+    所以這裡自己不設上限，出到來源檔案有的最新一天為止。
     來源 `data/fpm_rules/rules_hitlist_oos.csv` 本身已經是 walk-forward
-    樣本外命中明細，這裡只是再篩一次期間、換成 public 資料包的檔名。
+    樣本外命中明細，這裡只是再篩一次期間下限、換成 public 資料包的檔名。
     """
     src = DATA_DIR / "fpm_rules" / "rules_hitlist_oos.csv"
     if not src.exists():
@@ -252,7 +255,7 @@ def build_fpm_rule_hits(out_dir: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     hits = pd.read_csv(src, parse_dates=["date"])
-    hits = hits[(hits["date"] >= TEST_START) & (hits["date"] <= TEST_END)]
+    hits = hits[hits["date"] >= TEST_START]
     hits["stock_id"] = hits["stock_id"].astype(str)
     hits["label"] = hits["label"].fillna(0).astype("int8")
     if "validation_level" not in hits.columns:
@@ -260,7 +263,7 @@ def build_fpm_rule_hits(out_dir: Path) -> pd.DataFrame:
     hits = hits[["date", "stock_id", "rule_id", "r_end", "mdd", "label", "validation_level"]] \
         .sort_values(["date", "stock_id"]).reset_index(drop=True)
     hits.to_parquet(out_dir / "fpm_rule_hits.parquet", index=False, compression="zstd")
-    logger.info(f"fpm_rule_hits：{len(hits):,} 列（{TEST_START}~{TEST_END}）")
+    logger.info(f"fpm_rule_hits：{len(hits):,} 列（{TEST_START}~{hits['date'].max().date()}）")
     return hits
 
 
