@@ -73,6 +73,14 @@ def render(load_stock_list: Callable[[], pd.DataFrame]) -> None:
         st.info("至少選一條規則")
         st.stop()
 
+    levels = sorted(hitlist["validation_level"].unique()) if "validation_level" in hitlist.columns else []
+    selected_levels = st.multiselect(
+        "驗證等級（可複選，預設全選）", options=levels, default=levels,
+        help="「window顯著性驗證過」：規則在該筆所屬的 walk-forward 視窗有通過統計檢定。"
+             "「直接套規則」：2026 年資料因為沒有任何規則通過 window 4 的檢定，"
+             "是拿定案的規則直接套用算出來的，嚴謹度較低，不是同一個等級。",
+    ) if levels else []
+
     with st.expander("規則統計（勝率 / lift / 樣本外期望報酬）", expanded=False):
         stats_df = pd.DataFrame([
             {"規則": rid, "名稱": name_by_id[rid], **stats_by_id[rid]}
@@ -80,7 +88,10 @@ def render(load_stock_list: Callable[[], pd.DataFrame]) -> None:
         ])
         st.dataframe(stats_df, use_container_width=True, hide_index=True)
 
-    filtered = hitlist[hitlist["rule_id"].isin(selected_ids)].sort_values("date", ascending=False)
+    filtered = hitlist[hitlist["rule_id"].isin(selected_ids)]
+    if selected_levels:
+        filtered = filtered[filtered["validation_level"].isin(selected_levels)]
+    filtered = filtered.sort_values("date", ascending=False)
 
     st.subheader("依買點聚合（同一天同一檔股票，符合了幾條規則）")
     st.caption("同時符合越多規則的買點，樣本外表現通常越好——這是型態疊加的訊號，"
@@ -109,10 +120,11 @@ def render(load_stock_list: Callable[[], pd.DataFrame]) -> None:
     else:
         filtered["stock_name"] = ""
 
-    show_cols = ["date", "stock_id", "stock_name", "rule_id", "r_end", "mdd", "label"]
+    show_cols = ["date", "stock_id", "stock_name", "rule_id", "r_end", "mdd", "label", "validation_level"]
     display_df = filtered[show_cols].rename(columns={
         "date": "進場決策日", "stock_id": "股票", "stock_name": "名稱",
         "rule_id": "規則", "r_end": "20日後超額報酬", "mdd": "期間最大回檔", "label": "是否起漲",
+        "validation_level": "驗證等級",
     })
     st.dataframe(
         display_df.style.format({"20日後超額報酬": "{:.2%}", "期間最大回檔": "{:.2%}"}),

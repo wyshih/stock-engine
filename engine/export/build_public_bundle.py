@@ -255,7 +255,9 @@ def build_fpm_rule_hits(out_dir: Path) -> pd.DataFrame:
     hits = hits[(hits["date"] >= TEST_START) & (hits["date"] <= TEST_END)]
     hits["stock_id"] = hits["stock_id"].astype(str)
     hits["label"] = hits["label"].fillna(0).astype("int8")
-    hits = hits[["date", "stock_id", "rule_id", "r_end", "mdd", "label"]] \
+    if "validation_level" not in hits.columns:
+        hits["validation_level"] = "window顯著性驗證過"  # 舊格式相容：沒有這欄的一律視為驗證過
+    hits = hits[["date", "stock_id", "rule_id", "r_end", "mdd", "label", "validation_level"]] \
         .sort_values(["date", "stock_id"]).reset_index(drop=True)
     hits.to_parquet(out_dir / "fpm_rule_hits.parquet", index=False, compression="zstd")
     logger.info(f"fpm_rule_hits：{len(hits):,} 列（{TEST_START}~{TEST_END}）")
