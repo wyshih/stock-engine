@@ -78,7 +78,9 @@ def render(load_stock_list: Callable[[], pd.DataFrame]) -> None:
         "驗證等級（可複選，預設全選）", options=levels, default=levels,
         help="「window顯著性驗證過」：規則在該筆所屬的 walk-forward 視窗有通過統計檢定。"
              "「直接套規則」：2026 年資料因為沒有任何規則通過 window 4 的檢定，"
-             "是拿定案的規則直接套用算出來的，嚴謹度較低，不是同一個等級。",
+             "是拿定案的規則直接套用算出來的，嚴謹度較低，不是同一個等級。"
+             "「待驗證」：最近 20 個交易日內的命中，20 天後的結果（r_end/是否起漲）"
+             "還沒算出來，純粹是「現在符合型態」，過陣子資料更新後才會知道結果。",
     ) if levels else []
 
     with st.expander("規則統計（勝率 / lift / 樣本外期望報酬）", expanded=False):
