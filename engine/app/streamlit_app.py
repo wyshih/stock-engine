@@ -272,7 +272,7 @@ else:
                      "`make train`")
 st.sidebar.divider()
 
-PAGES = ["今日推薦", "訊號清單", "個股歷史預測", "技術面分析", "資料預覽", "特徵預覽",
+PAGES = ["今日推薦", "訊號清單", "個股歷史預測", "技術面分析", "型態規則", "資料預覽", "特徵預覽",
          "回測結果", "模型成效"]
 if "page" not in st.session_state:
     st.session_state.page = PAGES[0]
@@ -899,6 +899,16 @@ elif page == "技術面分析":
     from engine.app.frontend import technical_page
 
     technical_page.render(load_stock_list)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 頁面：型態規則（fpm 專案挖出的平盤起漲點規則，樣本外命中買點瀏覽）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+elif page == "型態規則":
+    from engine.app.frontend import rule_screener
+
+    rule_screener.render(load_stock_list)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
