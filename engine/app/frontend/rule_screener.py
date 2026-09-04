@@ -81,7 +81,25 @@ def render(load_stock_list: Callable[[], pd.DataFrame]) -> None:
         st.dataframe(stats_df, use_container_width=True, hide_index=True)
 
     filtered = hitlist[hitlist["rule_id"].isin(selected_ids)].sort_values("date", ascending=False)
-    st.subheader(f"歷史命中買點（樣本外，共 {len(filtered)} 筆）")
+
+    st.subheader("依買點聚合（同一天同一檔股票，符合了幾條規則）")
+    st.caption("同時符合越多規則的買點，樣本外表現通常越好——這是型態疊加的訊號，"
+               "不是單一規則各自獨立的訊號。")
+    agg = filtered.groupby(["date", "stock_id"]).agg(
+        符合規則數=("rule_id", "nunique"),
+        規則清單=("rule_id", lambda s: ", ".join(sorted(s))),
+        r_end=("r_end", "first"),
+        label=("label", "first"),
+    ).reset_index().sort_values(["符合規則數", "date"], ascending=[False, False])
+    agg_display = agg.rename(columns={
+        "date": "進場決策日", "stock_id": "股票", "r_end": "20日後超額報酬", "label": "是否起漲",
+    })
+    st.dataframe(
+        agg_display.head(500).style.format({"20日後超額報酬": "{:.2%}"}),
+        use_container_width=True, hide_index=True, height=300,
+    )
+
+    st.subheader(f"歷史命中買點（樣本外，共 {len(filtered)} 筆，每條規則各一列）")
 
     sl = load_stock_list()
     filtered = filtered.copy()
