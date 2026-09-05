@@ -48,7 +48,19 @@ HOLD_VARIANTS = (None, 20)
 #
 # 2026-09-03：m1_steady20 / m1_xsrank20（兩輪修 label_up20 崩跌偏差的實驗）
 # 都已移除 —— 績效比 label_up20 差很多，見 doc/BACKTEST_LOG.md #31 / #32。
-MODEL_KEYS = ("m1_base_up20", "m1_mdd10")
+# 2026-09-05：加入 swing（波段起漲vs起跌）。它的出場規則跟另外兩個不同
+# （分數跌破 0.20 就賣，走 engine/backtest/score_exit.py），所以 `_run_one()`
+# 會依 bundle 的 `exit_rule` 分流 —— 這是它能進共用路徑的前提。
+MODEL_KEYS = ("m1_base_up20", "m1_mdd10", "swing")
+
+
+def _model_exit_rule(key: str) -> dict | None:
+    """模型自己的出場規則；None＝走 CURRENT_EXIT_RULES（既有行為）。"""
+    try:
+        from engine.models.bundle import exit_rule, load_by_key
+        return exit_rule(load_by_key(key))
+    except Exception:
+        return None
 
 # 內部驗證的預設區間＝Round 4 的樣本外全段
 DEFAULT_SPLITS = ("test", "test2")
@@ -93,13 +105,25 @@ def run_one(key: str, score_file: Path, threshold: float, mode: str,
     """
     from engine.backtest.backtest import CURRENT_EXIT_RULES as R, performance, simulate
 
-    trades, price = simulate(
-        "test", score_path=score_file, threshold=threshold, dedup=False,
-        max_hold_bars=max_hold_bars,
-        take_profit=R["take_profit"], stop_ma=R["stop_ma"],
-        trail_trigger=R["trail_trigger"], trail_pct=R["trail_pct"],
-        stop_loss=R["stop_loss"],
-    )
+    # 模型有自己的出場規則就走它的（2026-09-05 新增 swing 的分數出場）。
+    # 這裡是回測與公開資料包的唯一路徑，不分流的話 swing 會被套上 m1 的價格規則
+    # ——實測那組規則對它所有門檻都是負的，等於用錯的尺量。
+    # 舊模型沒有 exit_rule，dispatch 後行為逐字不變。
+    rule = _model_exit_rule(key)
+    if rule and rule.get("type") == "score":
+        from engine.backtest.score_exit import simulate_score_exit
+        trades, price = simulate_score_exit(
+            score_path=score_file, buy_threshold=threshold,
+            sell_threshold=rule.get("sell_threshold", 0.20), dedup=False,
+            max_hold_bars=max_hold_bars or 250)
+    else:
+        trades, price = simulate(
+            "test", score_path=score_file, threshold=threshold, dedup=False,
+            max_hold_bars=max_hold_bars,
+            take_profit=R["take_profit"], stop_ma=R["stop_ma"],
+            trail_trigger=R["trail_trigger"], trail_pct=R["trail_pct"],
+            stop_loss=R["stop_loss"],
+        )
     row = {"model": key, "mode": mode,
            "max_hold": "無上限" if max_hold_bars is None else f"{max_hold_bars}日",
            "threshold": threshold, "trades": 0}

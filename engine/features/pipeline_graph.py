@@ -45,6 +45,9 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "labels":               ("price",),
     "labels_mdd10":         ("labels", "price"),
     "labels_steady20":      ("price",),
+    # 2026-09-05：swing 標的除了收盤價，還要 exright 還原權值——不還原的話
+    # 分割/減資會被 ZigZag 當成崩跌（實測 8422 的 10:1 分割 = -90%）。
+    "labels_swing":         ("price", "exright"),
 }
 
 

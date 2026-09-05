@@ -194,6 +194,37 @@ def compute_threshold_streaks(hist: pd.DataFrame, up_to: pd.Timestamp, thr: floa
 # 不在前端另外實作一套（見 backtest.py `track_position` 的說明）。
 from engine.backtest.backtest import CURRENT_EXIT_RULES as EXIT_RULES, track_position  # noqa: E402
 
+
+def _model_exit_rule(key: str) -> dict | None:
+    """這個模型的出場規則；None＝走 EXIT_RULES（移動停利/停損），既有行為。
+
+    2026-09-05 新增 swing 模型，它的出場是「分數跌回門檻以下就賣」而不是價格
+    規則。讀 bundle 的 `exit_rule` 欄位，舊 bundle 沒有這一欄就回 None。
+    """
+    try:
+        from engine.models.bundle import exit_rule, load_by_key
+        return exit_rule(load_by_key(key))
+    except Exception:
+        return None
+
+
+def _run_backtest(key: str, split: str, score_path, threshold: float, **kw):
+    """依模型的出場規則挑回測路徑。回傳 (trades, price)，欄位兩邊相同。
+
+    swing 走 score_exit.simulate_score_exit（分數出場），其餘走 backtest.simulate。
+    刻意不在 simulate() 裡加分支 —— 那是 m1 兩個模型共用的唯一路徑。
+    """
+    rule = _model_exit_rule(key)
+    if rule and rule.get("type") == "score":
+        from engine.backtest.score_exit import simulate_score_exit
+        return simulate_score_exit(
+            score_path=score_path, buy_threshold=threshold,
+            sell_threshold=rule.get("sell_threshold", 0.20),
+            dedup=kw.get("dedup", False),
+            date_start=kw.get("date_start"), date_end=kw.get("date_end"))
+    from engine.backtest.backtest import simulate
+    return simulate(split, score_path=score_path, threshold=threshold, **kw)
+
 _REASON_LABEL = {
     "trail_stop": "移動停利", "take_profit": "停利",
     "stop_loss": "停損", "ma10_stop": "跌破MA10", "ma20_stop": "跌破MA20",
@@ -205,10 +236,50 @@ def _track(sid: str, buy_date: str, buy_price: float, as_of) -> dict | None:
     return track_position(sid, buy_date, buy_price=buy_price, as_of=as_of)
 
 
-def _exit_status(item: dict, as_of) -> str:
-    """關注清單某一筆的出場狀態，給損益表當一欄用。"""
+def _score_exit_status(item: dict, as_of, key: str, sell_th: float) -> str:
+    """分數出場模型的持倉狀態（swing 用）。
+
+    這類模型不看價格規則，只看分數：買進之後第一次出現「分數 <= 出場門檻」就賣。
+    對它顯示移動停利／停損是誤導 —— 那些規則在它的回測裡根本沒生效。
+    """
+    sid, buy_date = item["stock_id"], pd.Timestamp(item["buy_date"])
+    hist = load_score_history(key)
+    if hist.empty:
+        return "－（沒有分數資料）"
+    mine = hist[(hist["stock_id"] == sid) & (hist["date"] >= buy_date) &
+                (hist["date"] <= pd.Timestamp(as_of))].sort_values("date")
+    if mine.empty:
+        return "－（買進後沒有分數）"
+    # 兜底上限跟回測同一個常數 —— 分數一直沒跌破時，回測會在這裡出場，
+    # 顯示端不套的話兩邊會對不起來（實測有部位分數 15 個月都沒跌破）。
+    from engine.backtest.score_exit import DEFAULT_MAX_HOLD
+    if len(mine) > DEFAULT_MAX_HOLD:
+        return (f"🔴 抱滿 {DEFAULT_MAX_HOLD} 個交易日上限 "
+                f"（{mine.iloc[DEFAULT_MAX_HOLD]['date'].date()}）→ 隔日開盤賣出")
+    hit = mine[mine["score"] <= sell_th]
+    if not hit.empty:
+        row = hit.iloc[0]
+        return (f"🔴 分數跌破 {sell_th:.2f}（{row['date'].date()} 分數 "
+                f"{row['score']:.3f}）→ 隔日開盤賣出")
+    last = mine.iloc[-1]
+    return (f"🟢 持倉中・分數 {last['score']:.3f}（{last['date'].date()}），"
+            f"跌到 {sell_th:.2f} 以下才賣")
+
+
+def _exit_status(item: dict, as_of, key: str | None = None) -> str:
+    """關注清單某一筆的出場狀態，給損益表當一欄用。
+
+    2026-09-05：模型如果有自己的出場規則（bundle 的 `exit_rule`），就走它的；
+    沒有的話維持原本的移動停利／停損追蹤。
+    """
     if not item.get("buy_date"):
         return "－（沒填購入日期）"
+    rule = _model_exit_rule(key) if key else None
+    if rule and rule.get("type") == "score":
+        try:
+            return _score_exit_status(item, as_of, key, rule.get("sell_threshold", 0.20))
+        except Exception as e:                   # 單一筆算不出來不能讓整頁掛掉
+            return f"追蹤失敗：{e}"
     try:
         r = _track(item["stock_id"], item["buy_date"], item["buy_price"], as_of)
     except Exception as e:                       # 前端不能因為單一筆算不出來就整頁掛掉
@@ -273,7 +344,7 @@ else:
 st.sidebar.divider()
 
 PAGES = ["今日推薦", "訊號清單", "個股歷史預測", "技術面分析", "型態規則", "資料預覽", "特徵預覽",
-         "回測結果", "模型成效"]
+         "回測結果", "模型成效", "波段模型"]
 if "page" not in st.session_state:
     st.session_state.page = PAGES[0]
 for _p in PAGES:
@@ -349,16 +420,23 @@ if st.session_state.watchlist:
                 pnl_pct = (cur_close - buy_price) / buy_price
                 rows.append({"股票": _stock_label(sid), "購入價": buy_price,
                             "現價": cur_close, "損益%": pnl_pct,
-                            "出場狀態": _exit_status(it, pnl_date)})
+                            "出場狀態": _exit_status(it, pnl_date, model_key)})
             if rows:
                 pnl_df = pd.DataFrame(rows)
                 pnl_df["損益%"] = pnl_df["損益%"].map("{:+.2%}".format)
                 st.dataframe(pnl_df, use_container_width=True, hide_index=True)
-                st.caption(
-                    f"出場規則：移動停利 獲利 {EXIT_RULES['trail_trigger']:.0%} 觸發、"
-                    f"回落 {EXIT_RULES['trail_pct']:.0%} 出場；固定停損 "
-                    f"{EXIT_RULES['stop_loss']:.0%}（與回測頁預設同一套）。"
-                    "沒填購入日期的不會追蹤。")
+                _r = _model_exit_rule(model_key) if model_key else None
+                if _r and _r.get("type") == "score":
+                    st.caption(
+                        f"出場規則：**分數跌回 {_r.get('sell_threshold', 0.20):.2f} 以下就賣**"
+                        f"（{bundle_mod.model_label(model_key)} 專用，與回測頁同一套）。"
+                        "移動停利／停損對這個模型不生效。沒填購入日期的不會追蹤。")
+                else:
+                    st.caption(
+                        f"出場規則：移動停利 獲利 {EXIT_RULES['trail_trigger']:.0%} 觸發、"
+                        f"回落 {EXIT_RULES['trail_pct']:.0%} 出場；固定停損 "
+                        f"{EXIT_RULES['stop_loss']:.0%}（與回測頁預設同一套）。"
+                        "沒填購入日期的不會追蹤。")
 else:
     st.sidebar.caption("目前沒有關注股票")
 
@@ -1149,18 +1227,22 @@ elif page == "回測結果":
             st.warning("請選擇完整的起訖日期")
             st.stop()
         try:
-            from engine.backtest.backtest import simulate, performance
+            from engine.backtest.backtest import performance
             trail_trigger = (trail_trigger_pct / 100) if use_trailing else None
             trail_pct = (trail_pct_pct / 100) if use_trailing else 0.10
+            _rule = _model_exit_rule(model_key)
+            if _rule and _rule.get("type") == "score":
+                st.info(f"這個模型的出場是「分數跌回 {_rule.get('sell_threshold', 0.20):.2f} "
+                        f"以下就賣」，上面的移動停利／停損／均線設定對它不生效。")
             with st.spinner("回測中..."):
-                trades, price = simulate(split, score_path=score_file,
-                                         take_profit=take_profit, threshold=signal_thr,
-                                         stop_ma=stop_ma, stop_loss=stop_loss,
-                                         date_start=str(date_range[0]), date_end=str(date_range[1]),
-                                         min_streak_days=single_streak, streak_mode=single_streak_mode,
-                                         pattern=single_pattern, min_above_all_ma_days=single_above_all,
-                                         trail_trigger=trail_trigger, trail_pct=trail_pct,
-                                         dedup=dedup_mode)
+                trades, price = _run_backtest(
+                    model_key, split, score_file, signal_thr,
+                    take_profit=take_profit, stop_ma=stop_ma, stop_loss=stop_loss,
+                    date_start=str(date_range[0]), date_end=str(date_range[1]),
+                    min_streak_days=single_streak, streak_mode=single_streak_mode,
+                    pattern=single_pattern, min_above_all_ma_days=single_above_all,
+                    trail_trigger=trail_trigger, trail_pct=trail_pct,
+                    dedup=dedup_mode)
         except Exception as e:
             st.error(f"回測失敗：{e}")
             st.stop()
@@ -1297,6 +1379,16 @@ elif page == "回測結果":
             st.warning("請至少選一個移動停利觸發門檻、回落幅度、停損均線、機率門檻")
             st.stop()
 
+        _grid_rule = _model_exit_rule(model_key) if model_key else None
+        if _grid_rule and _grid_rule.get("type") == "score":
+            # 這一頁掃的全是移動停利／停損／均線參數，而這類模型的出場只看分數，
+            # 掃出來的每一格都會是同一個結果。與其給一張看似有差異的假表，不如擋掉。
+            st.warning(
+                f"**{bundle_mod.model_label(model_key)}** 的出場是「分數跌回 "
+                f"{_grid_rule.get('sell_threshold', 0.20):.2f} 以下就賣」，"
+                "這一頁掃的移動停利／停損／均線參數對它全都不生效。"
+                "請改用「回測結果」頁，或在那裡調整進場門檻。")
+            st.stop()
         from engine.backtest.backtest import simulate, performance
         rows = []
         progress = st.progress(0.0, text=f"搜尋中... 0/{len(combos)}")
@@ -1436,3 +1528,105 @@ elif page == "模型成效":
     if hasattr(model_obj, "feature_importances_"):
         imp = pd.Series(model_obj.feature_importances_, index=b["cols"])
         st.bar_chart(imp.nlargest(20).sort_values())
+
+
+elif page == "波段模型":
+    # swing 專屬頁。獨立出來的理由見 engine/app/frontend/swing_panel.py 檔頭：
+    # 它的出場是分數規則，共用回測頁上一半以上的控制項對它不生效，靠分流補在
+    # 共用頁面上很容易漏（第一版就漏了參數搜尋頁）。
+    from engine.app.frontend.swing_panel import (daily_density, density_verdict,
+                                                 holdings_status)
+
+    SWING_KEY = "swing"
+    st.title("🌊 波段模型")
+    if SWING_KEY not in bundle_mod.available_keys():
+        st.warning("找不到 models/bundle_swing.pkl，請先執行 `make train-swing`")
+        st.stop()
+
+    _rule = _model_exit_rule(SWING_KEY) or {}
+    _sell = _rule.get("sell_threshold", 0.20)
+    _buy_default = bundle_mod.CHOSEN_THRESHOLDS.get(SWING_KEY, 0.97)
+    st.caption(
+        f"標的是「波段起漲 vs 起跌」（`label_swing_up`）。"
+        f"**進場**分數 ≥ 門檻、**出場**分數 ≤ {_sell:.2f}，都是隔日開盤成交。"
+        "這是逆勢型模型 —— 大盤有明顯回檔時有效，緩漲盤會落後。")
+
+    swing_scores = load_score_history(SWING_KEY)
+    if swing_scores.empty:
+        st.error("沒有 swing 的分數檔，請先執行 `make train-swing`")
+        st.stop()
+
+    buy_th = st.slider("進場門檻", 0.50, 1.00, float(_buy_default), 0.01,
+                       key="swing_buy_th")
+
+    # ── 訊號密度：這個模型「現在該不該用」的直接指標 ──────────────────────
+    dens = daily_density(swing_scores, buy_th)
+    if not dens.empty:
+        latest = dens.sort_values("date").iloc[-1]
+        label, note = density_verdict(float(latest["density"]))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("最新一天訊號數", f"{int(latest['n_signal']):,}")
+        c2.metric("訊號密度", f"{latest['density']:.3%}")
+        c3.metric("狀態", label)
+        st.info(note)
+        st.caption(f"資料日期 {pd.Timestamp(latest['date']).date()}。"
+                   "密度＝當日過門檻檔數 ÷ 當日有分數檔數。")
+        st.line_chart(dens.set_index("date")["density"], height=180)
+
+    # ── 今日訊號 ────────────────────────────────────────────────────────────
+    st.subheader("最新一天的訊號")
+    if not dens.empty:
+        last_day = dens.sort_values("date").iloc[-1]["date"]
+        picks = swing_scores[(swing_scores["date"] == last_day) &
+                             (swing_scores["score"] >= buy_th)].copy()
+        picks = picks.sort_values("score", ascending=False)
+        if picks.empty:
+            st.info("這一天沒有任何股票過門檻 —— 依上面的說明，這種時候不該勉強出手。")
+        else:
+            picks["股票"] = picks["stock_id"].map(_stock_label)
+            st.dataframe(picks[["股票", "score"]].rename(columns={"score": "分數"}),
+                use_container_width=True, hide_index=True,
+                column_config={"分數": st.column_config.NumberColumn(format="%.4f")})
+
+    # ── 關注清單的持倉狀態（只看分數，不看價格規則）───────────────────────
+    st.subheader("關注清單的分數狀態")
+    _watch = st.session_state.get("watchlist", [])
+    if not _watch:
+        st.caption("關注清單是空的（左側可以加）。")
+    else:
+        hold = holdings_status(_watch, swing_scores, _sell)
+        hold["股票"] = hold["stock_id"].map(_stock_label)
+        st.dataframe(hold[["股票", "date", "score", "status"]].rename(
+            columns={"date": "資料日", "score": "分數", "status": "狀態"}),
+            use_container_width=True, hide_index=True)
+        st.caption(f"這個模型的賣出只看分數：跌到 {_sell:.2f} 以下就賣，"
+                   "跟移動停利／停損無關。")
+
+    # ── 回測：只有兩個門檻，沒有價格規則可調 ────────────────────────────────
+    st.subheader("回測")
+    # 切分清單在這裡自己列 —— 「回測結果」頁的 SPLIT_LABEL 定義在那個頁面的
+    # 區塊裡，跨頁拿不到；重複一份比把它提到模組層級改動更小。
+    _swing_splits = [sp for sp in ("val_sel", "test", "test2")
+                     if bundle_mod.score_path(SWING_KEY, sp).exists()]
+    if not _swing_splits:
+        st.warning("找不到 swing 的分數檔"); st.stop()
+    bt_split = st.selectbox("切分", _swing_splits, key="swing_bt_split")
+    if st.button("執行回測", type="primary", key="swing_bt_run"):
+        from engine.backtest.backtest import performance
+        from engine.backtest.score_exit import simulate_score_exit
+        with st.spinner("回測中..."):
+            trades, price = simulate_score_exit(
+                score_path=bundle_mod.score_path(SWING_KEY, bt_split),
+                buy_threshold=buy_th, sell_threshold=_sell, dedup=False)
+        if trades.empty:
+            st.warning("這個門檻在該切分下沒有任何交易")
+        else:
+            perf = performance(trades, price)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("交易數", f"{perf['trades']:,}")
+            c2.metric("勝率", f"{perf['win_rate']:.1%}")
+            c3.metric("平均報酬", f"{perf['avg_return']:+.2%}")
+            c4.metric("Sharpe", f"{perf['sharpe']:.2f}")
+            st.caption("報酬是毛報酬（未扣手續費與證交稅），口徑與 `make backtest` 相同。"
+                       "台股來回成本約 0.585%。")
+            st.dataframe(trades.tail(200), use_container_width=True, hide_index=True)

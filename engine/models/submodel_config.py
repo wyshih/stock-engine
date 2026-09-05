@@ -183,6 +183,17 @@ def feature_cols(model_id: str, all_feature_cols: list[str]) -> list[str]:
         # AUC 幾乎相同但交易指標全面較佳，與 BACKTEST_LOG #18 在
         # BUY20_PERSIST10 上的結論一致：rel_* 無訊號，只稀釋 sqrt 抽樣。
         "UP20": MARKET_PREFIXES + SHORT_PRICE_PREFIXES + MED_PRICE_PREFIXES + LONG_PRICE_PREFIXES + SWING_PREFIXES + CHIP_PREFIXES + STATUS_PREFIXES + SHAPE_PREFIXES + TRENDLINE_PREFIXES + REVENUE_PREFIXES,
+        # 2026-09-05 新增。**跟 UP20 同一組，唯一差別是拿掉 MARKET_PREFIXES**——
+        # `label_swing_up` 分辨的是波段起點的方向，把大盤特徵放進去，模型會改去
+        # 猜大盤循環：實測 train/val/test 的正例率是 42.3%/48.8%/40.0%（大盤主宰
+        # 目標），加上 mkt_* 之後第 1 輪就早停，等於學不起來。
+        # ⚠️ 2026-09-05：這裡曾經包含 LONG_PRICE_PREFIXES + REVENUE_PREFIXES（＝跟
+        # UP20 完全一樣只去掉 mkt_*），實測**把標的的性質改掉了**：特徵重要度前五名
+        # 變成 revenue_accel / revenue_mom / dividend_yield / revenue_yoy / pbr 全是
+        # 基本面，模型改去做價值+動能，高分股從「剛跌下來的」變成「已經漲很多的」。
+        # `label_swing_up` 問的是波段轉折，那是**技術面與籌碼面**的問題，季頻的基本面
+        # 在這個時間尺度上只會提供緩慢漂移的分組資訊。改回只用技術+籌碼。
+        "SWING": SHORT_PRICE_PREFIXES + MED_PRICE_PREFIXES + SWING_PREFIXES + CHIP_PREFIXES + STATUS_PREFIXES + SHAPE_PREFIXES + TRENDLINE_PREFIXES,
     }
     prefixes = pm.get(model_id, SHORT_PRICE_PREFIXES)
     cols = [c for c in _select(all_feature_cols, prefixes) if c not in EXCLUDE_COLS]
@@ -208,6 +219,7 @@ HORIZON_DAYS = {
     "BUY10_PERSIST7": 10,
     "BUY20_PERSIST10": 20,
     "UP20": 20,
+    "SWING": None,   # 出場是 5% 移動停損，不是固定天數
 }
 
 
@@ -227,6 +239,7 @@ def label_col(model_id: str) -> str:
         "BUY10_PERSIST7": "label_buy10_persist7",
         "BUY20_PERSIST10": "label_buy20_persist10",
         "UP20": "label_up20",
+        "SWING": "label_swing_up",
     }
     return mapping[model_id]
 

@@ -84,10 +84,12 @@ DISCLAIMER = (
 CAVEATS = [
     "資料源為 TWSE / TPEx 官方端點，不含已下市股票 —— 全部統計都帶生存偏差，數字偏樂觀。",
     "測試期（2025-02~2026-07）不在訓練期內，但門檻是在 2024 下半年的 val_sel 上由人挑的。",
-    "2 個模型都是 Round 4 切分：train 2020-01~2023-11、val 2024、test 2025-02~2026-07，兩個交界各留一個月 embargo。",
-    "兩者用同一份特徵集，只差標的：m1_base_up20 只看未來 20 日的上漲天數；m1_mdd10 再要求期間最低收盤不跌破 −10%。",
+    "m1_base_up20 與 m1_mdd10 是 Round 4 切分：train 2020-01~2023-11、val 2024、test 2025-02~2026-07，兩個交界各留一個月 embargo。",
+    "這兩者用同一份特徵集，只差標的：m1_base_up20 只看未來 20 日的上漲天數；m1_mdd10 再要求期間最低收盤不跌破 −10%。",
+    "swing 的切分不同（train 2019-01~2023-06、val 2024、test 2025-07~2026-07，交界留六個月 embargo），標的是波段起漲 vs 起跌，不與上面兩個直接可比。",
     "回測口徑 dedup=False（每筆超過門檻的訊號獨立進場），與挑門檻時看的曲線同一把尺。",
-    "出場規則：獲利 15% 後啟動移動停利、從最高收盤回落 10% 出場、固定停損 20%。",
+    "出場規則**每個模型不同**，見各模型的說明：m1 兩個是移動停利／停損；swing 是分數跌回門檻以下就賣。",
+    "swing 是逆勢型模型 —— 大盤有明顯回檔時有效，緩漲盤會落後。2025 下半年（大盤最大回檔僅 6%）它輸給大盤 2.2%。",
     "148 條技術說法的統計是全市場全歷史，不是個股自己的統計，也沒有納入產業與籌碼結構。",
 ]
 
@@ -107,6 +109,28 @@ SUPERSEDED_OUTPUTS = (
     # 被移除模型的每模型產物
     + tuple(f"scores_test_{k}.parquet" for k in RETIRED_MODEL_KEYS)
     + tuple(f"sigcurve_{k}.csv.gz" for k in RETIRED_MODEL_KEYS))
+
+
+def _exit_meta(key: str) -> dict:
+    """模型的出場規則描述，寫進 manifest 給公開站顯示用。
+
+    沒有自訂規則的（m1 兩個）回傳 `CURRENT_EXIT_RULES` 的內容，公開站照舊顯示
+    移動停利／停損；swing 回傳分數門檻。兩邊都由 engine 端決定，公開站不硬編。
+    """
+    from engine.backtest.backtest import CURRENT_EXIT_RULES
+    from engine.models.bundle import exit_rule, load_by_key
+    try:
+        rule = exit_rule(load_by_key(key))
+    except Exception:
+        rule = None
+    if rule and rule.get("type") == "score":
+        return {"type": "score", "sell_threshold": rule.get("sell_threshold", 0.20),
+                "desc": f"分數跌回 {rule.get('sell_threshold', 0.20):.2f} 以下，隔日開盤賣出"}
+    r = CURRENT_EXIT_RULES
+    return {"type": "price", "trail_trigger": r["trail_trigger"],
+            "trail_pct": r["trail_pct"], "stop_loss": r["stop_loss"],
+            "desc": (f"獲利 {r['trail_trigger']:.0%} 啟動移動停利、回落 "
+                     f"{r['trail_pct']:.0%} 出場；固定停損 {r['stop_loss']:.0%}")}
 
 
 # ── 各項產出 ──────────────────────────────────────────────────────────────────
@@ -409,7 +433,11 @@ def write_manifest(out_dir: Path, price: pd.DataFrame, scores: pd.DataFrame) -> 
                  "test 2025-02~2025-12 / test2 2026-01~2026-07）",
         # name 讓公開站的選單顯示「全特徵·漲勢」而不是 m1_base_up20；
         # key 仍是唯一識別，檔名與 backtest_summary 都用它。
-        "models": [{"key": k, "name": model_label(k), "threshold": CHOSEN_THRESHOLDS[k]}
+        # exit：這個模型的出場規則。2026-09-05 起模型不再共用同一套出場 ——
+        # m1 兩個是價格規則（移動停利/停損），swing 是「分數跌回門檻以下就賣」。
+        # 公開站要照這個顯示買賣說明，不能再硬編一套（會對 swing 講錯）。
+        "models": [{"key": k, "name": model_label(k), "threshold": CHOSEN_THRESHOLDS[k],
+                    "exit": _exit_meta(k)}
                    for k in MODEL_KEYS],
         # 曲線的統計母體是 val_sel，與上面的 period 完全不重疊。檔名不帶 split，
         # 直接讀資料包的人分辨不出來，所以在這裡明講（2026-08-27 稽核 MEDIUM-1）。

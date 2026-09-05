@@ -66,6 +66,20 @@ def backtest_trades(tag: str, split: str, floor: float, exit_kw: dict) -> pd.Dat
     是低門檻集合的子集（同股去重可能讓極少數較晚的訊號補上，屬可忽略的近似）。
     """
     score_path = DATA_DIR / f"score_{tag}_{split}.parquet"
+    # 模型有自己的出場規則就走它的（2026-09-05 新增 swing）。曲線與正式回測必須
+    # 同一套出場，否則就是「在 A 尺上挑門檻、拿去 B 尺回測」——BACKTEST_LOG #24
+    # vs #25 那個坑的同一個形狀。舊模型沒有 exit_rule，dispatch 後行為不變。
+    try:
+        from engine.models.bundle import exit_rule, load_by_key
+        rule = exit_rule(load_by_key(tag))
+    except Exception:
+        rule = None
+    if rule and rule.get("type") == "score":
+        from engine.backtest.score_exit import simulate_score_exit
+        trades, _ = simulate_score_exit(
+            score_path=score_path, buy_threshold=floor,
+            sell_threshold=rule.get("sell_threshold", 0.20), dedup=False)
+        return trades
     # dedup=False：**訊號層級**口徑，每一筆超過門檻的訊號都獨立計一筆，同一支在
     # 不同日期各算一次。這是使用者實際的用法，也是 make backtest 用的口徑
     # （CLAUDE.md 規則 8/9、bundle.py 的 CHOSEN_THRESHOLDS 註解）。

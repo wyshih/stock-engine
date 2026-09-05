@@ -139,12 +139,18 @@ features: suspect-jumps  ## 增量建特徵（features.parquet，380 欄）
 
 	$(PY) -m engine.features.pipeline_graph --stamp features
 
-labels:  ## 算 label（labels.parquet / labels_mdd10.parquet / labels_steady20.parquet）
+labels:  ## 算 label（labels / labels_mdd10 / labels_steady20 / labels_swing）
 	$(PY) -m engine.models.build_labels
 	$(PY) -m engine.models.build_labels_mdd
 	$(PY) -m engine.models.build_labels_steady
-	@for n in labels labels_mdd10 labels_steady20; do \
+	$(PY) -m engine.models.build_labels_swing
+	@for n in labels labels_mdd10 labels_steady20 labels_swing; do \
 		$(PY) -m engine.features.pipeline_graph --stamp $$n; done
+
+train-swing:  ## 訓練 swing 模型（第 3 個模型，跟 make train 的 2 個各自獨立）
+	@# 刻意不掛進 `make train` —— 那支是 m1 兩個模型的重建路徑（train_all.sh），
+	@# swing 掛進去的話它一掛，m1 的重建就跟著斷。這裡獨立一條，壞了不影響最高原則。
+	$(PY) -m engine.models.train_swing
 
 check-stale:  ## 檢查有沒有衍生檔的上游變過（增量只看日期，抓不到這種）
 	$(PY) -m engine.features.pipeline_graph --check
@@ -236,7 +242,7 @@ clean-derived:  ## 刪掉所有衍生檔（特徵 / label / 分數 / 曲線 / �
 	@rm -fv data/{price,chip,fundamental,talib,swing,market,trendline,relative,revenue}_features.parquet
 	@rm -fv data/features.parquet
 	@# labels_mdd10 2026-09-02 前漏在這裡，於是 rebuild-full 之後留著用舊資料算的標的。
-	@rm -fv data/labels.parquet data/labels_mdd10.parquet data/labels_steady20.parquet
+	@rm -fv data/labels.parquet data/labels_mdd10.parquet data/labels_steady20.parquet data/labels_swing.parquet
 	@rm -fv data/score_*.parquet data/sigcurve_*.csv data/threshold_curve_*
 	@# 調參結果也是衍生檔 —— 它是「用某一份特徵資料調出來的組態」。
 	@# 2026-08-24 稽核抓到：舊版不刪它，於是 `make rebuild-full && make train` 在特徵

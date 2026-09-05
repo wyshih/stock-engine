@@ -56,6 +56,7 @@ MODEL_NAMES = {
     "m1_base_up20": "全特徵·漲勢",
     "m1_mdd10":     "全特徵·抗套牢",
     "m1_steady20":  "全特徵·盤整緩漲",
+    "swing":        "波段·起漲vs起跌",
 }
 
 
@@ -227,7 +228,28 @@ CHOSEN_THRESHOLDS = {
     # 平均 +7.62%、Sharpe 0.316、MDD −6.67%。
     # ⚠️ 樣本偏薄（153 筆，只有 m1 的四分之一），看回測時要記得這件事。
     "m1_mdd10": 0.68,
+
+    # swing（2026-09-05）。**出場規則跟上面兩個不同** —— 不是移動停利/停損，
+    # 是「分數跌回 0.20 以下就賣」，走 engine/backtest/score_exit.py。
+    # bundle 裡的 `exit_rule` 欄位記著這件事，讀取端用 .get() 取，
+    # 舊 bundle 沒有這一欄就是既有行為。
+    # 這個門檻在 val_sel/test/test2 三段（買 0.97 賣 0.20，扣成本 0.585%）：
+    #   505 筆、每筆平均 +15.01%、中位 +12.62%、勝率 77.2%、平均抱 47 天、
+    #   扣掉同期同天數的等權大盤後 +7.28%，三段裡贏兩段
+    #   （2024H2 +1.76%、2025H2 -2.22%、2026H1 +10.91%）。
+    # ⚠️ 2025H2 輸給大盤。那半年大盤緩漲、最大回檔只有 6%，而這個模型抓的是
+    #    跌完之後的轉折 —— 沒有大跌就沒有它的舞台，訊號數也從 147/321 掉到 37。
+    "swing": 0.97,
 }
+
+
+def exit_rule(bundle: dict) -> dict | None:
+    """這個模型的出場規則。None＝走 backtest.CURRENT_EXIT_RULES（既有行為）。
+
+    只有 swing 會回傳非 None（`{"type": "score", "sell_threshold": 0.20}`）。
+    用 .get() 取，舊 bundle 沒有這一欄不會壞。
+    """
+    return bundle.get("exit_rule")
 
 # m1_steady20（2026-09-04 第三輪定案）：不是 m1 的競爭者，是覆蓋率用途的獨立
 # 第二選單（見 build_labels_steady.py 開頭「這個模型的角色」）。它仍列在
@@ -237,6 +259,9 @@ CHOSEN_THRESHOLDS = {
 # 同時餵給 `make backtest` 與 `make export-public`，兩條路徑耦合在一起，
 # 不能只留一邊。這個模型定位是**私有端**（`predict.py` / 本機 streamlit app，
 # 兩者都走 `available_keys()` 掃 `models/` 目錄，不受 MODEL_KEYS 限制）。
+# 2026-09-05：swing 原本列在這裡（因為出場規則不同、怕污染共用路徑），
+# 後來把 `summary._run_one()` 與 `threshold_curve.backtest_trades()` 都改成依
+# bundle 的 `exit_rule` 分流，共用路徑就接得住了，於是移出、進 MODEL_KEYS。
 EXPERIMENTAL_KEYS = frozenset({"m1_steady20"})
 
 FALLBACK_SIGNAL_RATE = 0.01
