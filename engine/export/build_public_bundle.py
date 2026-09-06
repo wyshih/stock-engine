@@ -318,6 +318,27 @@ def build_trade_rule_hits(out_dir: Path) -> pd.DataFrame:
     return hits
 
 
+def build_trade_rule_pending(out_dir: Path) -> pd.DataFrame:
+    """最新一批「收盤後選出、隔日開盤才買得到」的訊號。
+
+    這些還沒有成交價，所以不在 hitlist 裡。期間下限一樣卡 TEST_START。
+    """
+    src = DATA_DIR / "fpm_rules" / "trade_rules_pending.csv"
+    if not src.exists():
+        logger.warning("找不到 data/fpm_rules/trade_rules_pending.csv，跳過 trade_rule_pending")
+        return pd.DataFrame()
+
+    pend = pd.read_csv(src, parse_dates=["date"])
+    pend = pend[pend["date"] >= TEST_START]
+    if pend.empty:
+        logger.warning(f"trade_rules_pending 在 {TEST_START} 之後沒有資料，跳過")
+        return pend
+    pend["stock_id"] = pend["stock_id"].astype(str)
+    pend.to_parquet(out_dir / "trade_rule_pending.parquet", index=False, compression="zstd")
+    logger.info(f"trade_rule_pending：{len(pend)} 筆（{pend['date'].max().date()}）")
+    return pend
+
+
 def build_trade_rule_stats(out_dir: Path) -> dict:
     """買賣點規則清單 + 全歷史統計。
 
@@ -562,6 +583,7 @@ def main() -> None:
     build_fpm_rule_hits(out_dir)
     build_fpm_rule_stats(out_dir)
     build_trade_rule_hits(out_dir)
+    build_trade_rule_pending(out_dir)
     build_trade_rule_stats(out_dir)
     export_sigcurves(out_dir)
     copy_stock_list(out_dir)

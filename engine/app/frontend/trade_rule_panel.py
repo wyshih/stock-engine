@@ -139,3 +139,68 @@ def open_positions(hits: pd.DataFrame, watch: list[str] | None = None) -> pd.Dat
     if watch:
         stuck = stuck[stuck["stock_id"].astype(str).isin([str(w) for w in watch])]
     return stuck.sort_values("signal_date", ascending=False).reset_index(drop=True)
+
+
+# ── 每日買賣點 ────────────────────────────────────────────────────────────────
+# 一天會有三種東西，混在一張表裡看不懂，所以分三個函式：
+#   訊號日 D 收盤後決策 → D+1 開盤買進 → 達標日 K 收盤 → K+1 開盤賣出
+# 所以「今天要買的」是昨天的訊號，「今天出現的訊號」要明天才買得到。
+
+def trading_days(hits: pd.DataFrame, pending: pd.DataFrame | None = None) -> list:
+    """有東西可看的日期（買進日 / 賣出日 / 訊號日的聯集），由新到舊。"""
+    days: set = set()
+    if not hits.empty:
+        for c in ("buy_date", "sell_date", "signal_date"):
+            if c in hits.columns:
+                days |= set(hits[c].dropna())
+    if pending is not None and not pending.empty and "date" in pending.columns:
+        days |= set(pending["date"].dropna())
+    return sorted(days, reverse=True)
+
+
+def _on_date(df: pd.DataFrame, col: str, day) -> pd.DataFrame:
+    if df.empty or col not in df.columns:
+        return pd.DataFrame()
+    return df[df[col] == pd.Timestamp(day)].reset_index(drop=True)
+
+
+def buys_on(hits: pd.DataFrame, day) -> pd.DataFrame:
+    """這一天**開盤買進**的部位（訊號是前一個交易日發出的）。"""
+    return _on_date(hits, "buy_date", day)
+
+
+def sells_on(hits: pd.DataFrame, day) -> pd.DataFrame:
+    """這一天**開盤賣出**的部位。只有已結束的交易才算數 —— 未結束的那筆
+    `sell_date` 是資料尾端，不是真的賣出。"""
+    done = resolved_only(hits)
+    return _on_date(done, "sell_date", day)
+
+
+def new_signals_on(hits: pd.DataFrame, pending: pd.DataFrame | None, day) -> pd.DataFrame:
+    """這一天收盤後選出的股票 —— **明天開盤才買得到**。
+
+    已經成交的從 hits 取（帶得出後來的結果），還沒成交的從 pending 取。
+    """
+    fired = _on_date(hits, "signal_date", day)
+    if pending is None or pending.empty:
+        return fired
+    waiting = _on_date(pending.rename(columns={"date": "signal_date"}), "signal_date", day)
+    if waiting.empty:
+        return fired
+    if fired.empty:
+        return waiting
+    known = set(fired["stock_id"].astype(str))
+    waiting = waiting[~waiting["stock_id"].astype(str).isin(known)]
+    return pd.concat([fired, waiting], ignore_index=True)
+
+
+def holding_on(hits: pd.DataFrame, day) -> pd.DataFrame:
+    """這一天**手上還抱著**的部位：買進日 <= 當天 < 賣出日。
+
+    未結束的交易 `sell_date` 是資料尾端，當天之後一律算還抱著。
+    """
+    if hits.empty or "buy_date" not in hits.columns:
+        return pd.DataFrame()
+    d = pd.Timestamp(day)
+    held = hits[(hits["buy_date"] <= d) & (hits["sell_date"] > d)]
+    return held.sort_values("buy_date").reset_index(drop=True)

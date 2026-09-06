@@ -149,3 +149,88 @@ def test_open_positions_returns_unresolved_trades():
     out = trp.open_positions(_hits(rows))
 
     assert list(out["stock_id"]) == ["2330"]
+
+
+# ── 每日買賣點（2026-09-06）──────────────────────────────────────────────────
+
+def _trades(rows: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    for c in ("signal_date", "buy_date", "sell_date"):
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c])
+    return df
+
+
+def test_buys_on_returns_positions_bought_that_morning():
+    # Arrange：訊號 1/02 → 1/03 開盤買 → 1/10 賣
+    t = _trades([{"signal_date": "2024-01-02", "buy_date": "2024-01-03",
+                  "sell_date": "2024-01-10", "stock_id": "2330", "ret": 0.03,
+                  "hold": 5, "resolved": True}])
+
+    # Act / Assert
+    assert list(trp.buys_on(t, "2024-01-03")["stock_id"]) == ["2330"]
+    assert trp.buys_on(t, "2024-01-02").empty      # 訊號日還沒買
+
+
+def test_sells_on_ignores_unresolved_trades():
+    # Arrange：未結束的那筆 sell_date 是資料尾端，不是真的賣出
+    t = _trades([{"signal_date": "2024-01-02", "buy_date": "2024-01-03",
+                  "sell_date": "2024-01-10", "stock_id": "A", "ret": 0.03,
+                  "hold": 5, "resolved": True},
+                 {"signal_date": "2024-01-02", "buy_date": "2024-01-03",
+                  "sell_date": "2024-01-10", "stock_id": "B", "ret": -0.2,
+                  "hold": 5, "resolved": False}])
+
+    # Act
+    out = trp.sells_on(t, "2024-01-10")
+
+    # Assert
+    assert list(out["stock_id"]) == ["A"]
+
+
+def test_new_signals_merges_pending_picks_not_yet_traded():
+    # Arrange：當天兩檔訊號，其中 B 還沒成交（隔日開盤價還沒出來）
+    t = _trades([{"signal_date": "2026-09-01", "buy_date": "2026-09-02",
+                  "sell_date": "2026-09-05", "stock_id": "A", "ret": 0.03,
+                  "hold": 3, "resolved": True}])
+    pending = pd.DataFrame({"date": pd.to_datetime(["2026-09-01"]),
+                            "stock_id": ["B"], "rank": [1], "score": [0.99]})
+
+    # Act
+    out = trp.new_signals_on(t, pending, "2026-09-01")
+
+    # Assert
+    assert set(out["stock_id"]) == {"A", "B"}
+
+
+def test_new_signals_does_not_duplicate_a_pick_present_in_both_sources():
+    t = _trades([{"signal_date": "2026-09-01", "buy_date": "2026-09-02",
+                  "sell_date": "2026-09-05", "stock_id": "A", "ret": 0.03,
+                  "hold": 3, "resolved": True}])
+    pending = pd.DataFrame({"date": pd.to_datetime(["2026-09-01"]), "stock_id": ["A"]})
+
+    out = trp.new_signals_on(t, pending, "2026-09-01")
+
+    assert len(out) == 1
+
+
+def test_holding_on_covers_the_days_between_buy_and_sell():
+    t = _trades([{"signal_date": "2024-01-02", "buy_date": "2024-01-03",
+                  "sell_date": "2024-01-10", "stock_id": "A", "ret": 0.03,
+                  "hold": 5, "resolved": True}])
+
+    assert list(trp.holding_on(t, "2024-01-05")["stock_id"]) == ["A"]
+    assert trp.holding_on(t, "2024-01-02").empty   # 還沒買
+    assert trp.holding_on(t, "2024-01-10").empty   # 當天賣掉，不算持有
+
+
+def test_trading_days_are_newest_first_and_include_pending():
+    t = _trades([{"signal_date": "2024-01-02", "buy_date": "2024-01-03",
+                  "sell_date": "2024-01-10", "stock_id": "A", "ret": 0.0,
+                  "hold": 5, "resolved": True}])
+    pending = pd.DataFrame({"date": pd.to_datetime(["2026-09-01"]), "stock_id": ["B"]})
+
+    days = trp.trading_days(t, pending)
+
+    assert days[0] == pd.Timestamp("2026-09-01")
+    assert days == sorted(days, reverse=True)
