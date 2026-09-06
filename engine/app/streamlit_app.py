@@ -351,10 +351,13 @@ def _swing_trades(splits: tuple, buy_th: float, sell_th: float):
 
     各切分**合併成一條連續分數序列**再算，不是一個切分跑一次 —— 分開跑會把跨越
     切分邊界的部位切成兩筆，而且接不上訓練後那段 live 分數。
+
+    用 `forward_scores()` 而不是 `combined_scores()`：後者會把 live 裡切分開始
+    之前（訓練期）的日期也補進來。
     """
     from engine.backtest.score_exit import simulate_score_exit
-    from engine.models.score_source import combined_scores
-    scores = combined_scores("swing", splits)
+    from engine.models.score_source import forward_scores
+    scores = forward_scores("swing", splits)
     if scores.empty:
         return pd.DataFrame()
     trades, _ = simulate_score_exit(score_path=None, scores=scores,

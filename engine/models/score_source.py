@@ -62,3 +62,40 @@ def combined_scores(key: str, splits: tuple[str, ...],
         out = out[out["date"] <= end]
     return (out.drop_duplicates(subset=["date", "stock_id"], keep="first")
                .sort_values(["date", "stock_id"]).reset_index(drop=True))
+
+
+def forward_scores(key: str, splits: tuple[str, ...]) -> pd.DataFrame:
+    """切分分數檔 + **只往後延伸**的 live 分數。
+
+    `combined_scores()` 的規矩是「live 補訓練期分數檔完全沒有的日期」，那包含
+    **切分開始之前**的日期 —— 而 `score_live_*.parquet` 是對全歷史算的，涵蓋
+    訓練期。拿那段去驗證模型等於用樣本內的分數自我證明。
+
+    這支只往後接：live 之中晚於所有切分最後一天的部分才收。公開資料包與任何
+    「這個模型表現如何」的計算都要用這支，不要用 `combined_scores()`。
+    """
+    parts = []
+    for split in splits:
+        path = score_path(key, split)
+        if path.exists():
+            part = pd.read_parquet(path)[["date", "stock_id", "score"]]
+            part["date"] = pd.to_datetime(part["date"])
+            parts.append(part)
+    if not parts:
+        return pd.DataFrame(columns=["date", "stock_id", "score"])
+
+    trained = pd.concat(parts, ignore_index=True)
+    cutoff = trained["date"].max()
+
+    live_path = live_score_path(key)
+    if live_path.exists():
+        live = pd.read_parquet(live_path)[["date", "stock_id", "score"]]
+        live["date"] = pd.to_datetime(live["date"])
+        live = live[live["date"] > cutoff]
+        if not live.empty:
+            logger.info(f"{key}：live 往後延伸 {live['date'].nunique()} 個交易日"
+                        f"（{live['date'].min().date()}~{live['date'].max().date()}）")
+            trained = pd.concat([trained, live], ignore_index=True)
+
+    return (trained.drop_duplicates(subset=["date", "stock_id"], keep="first")
+            .sort_values(["stock_id", "date"]).reset_index(drop=True))

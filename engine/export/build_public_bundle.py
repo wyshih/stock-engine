@@ -43,8 +43,9 @@ import pandas as pd
 
 from engine.backtest import summary as summary_mod
 from engine.backtest.summary import MATCHED_TOP_PCT, MODEL_KEYS
-from engine.models.bundle import CHOSEN_THRESHOLDS, model_label, sigcurve_path
-from engine.models.score_source import combined_scores
+from engine.models.bundle import (CHOSEN_THRESHOLDS, model_label, score_path,
+                                  sigcurve_path)
+from engine.models.score_source import forward_scores
 from engine.paths import DATA_DIR, PROJECT_ROOT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -136,11 +137,15 @@ def _exit_meta(key: str) -> dict:
 # ── 各項產出 ──────────────────────────────────────────────────────────────────
 
 def price_end_date(all_dates: pd.Series) -> pd.Timestamp:
-    """價格要帶到 TEST_END 之後第 LOOKAHEAD_TRADING_DAYS 個交易日（不足就給到底）。"""
+    """價格帶到有資料的最後一天。
+
+    原本是「TEST_END 之後第 LOOKAHEAD_TRADING_DAYS 個交易日」，前提是訊號止於
+    TEST_END。2026-09-06 起分數與買賣點都會往後延伸到最新（見 `build_scores`），
+    價格再卡在 TEST_END+20 的話，最新那批訊號在站上只看得到中途，
+    正是當初設這個 lookahead 要避免的問題（4739 那次）。
+    """
     after = sorted(d for d in all_dates.unique() if d > pd.Timestamp(TEST_END))
-    if not after:
-        return pd.Timestamp(TEST_END)
-    return after[min(LOOKAHEAD_TRADING_DAYS, len(after)) - 1]
+    return after[-1] if after else pd.Timestamp(TEST_END)
 
 
 def lookahead_days(dates: pd.Series) -> int:
@@ -162,15 +167,39 @@ def build_price(out_dir: Path) -> pd.DataFrame:
     return price
 
 
+def model_period_start(key: str) -> pd.Timestamp:
+    """這個模型的公開期間從哪天開始 —— 它自己切分的最早那天，但不早於 TEST_START。
+
+    ⚠️ 各模型的切分起點不同（m1 是 2025-02，swing 是 2025-07，訓練時間不同）。
+    一律從 TEST_START 起算的話，swing 的 2025-02~06 就得靠 live 分數填 —— 那段
+    落在 swing 自己的訓練期內，等於把樣本內的分數當成測試期成績展示。
+    """
+    starts = []
+    for split in SPLITS:
+        path = score_path(key, split)
+        if path.exists():
+            d = pd.to_datetime(pd.read_parquet(path, columns=["date"])["date"])
+            if len(d):
+                starts.append(d.min())
+    return max(min(starts), pd.Timestamp(TEST_START)) if starts else pd.Timestamp(TEST_START)
+
+
 def build_scores(out_dir: Path) -> pd.DataFrame:
     """各模型在測試期的分數，一個模型一個檔。
 
-    分數來源一律走 `score_source.combined_scores()` —— 回測也走同一支，
-    兩邊才不會像 2026-08-27 那次一樣各自組出不同的訊號宇宙。
+    走 `score_source.forward_scores()`：切分分數檔 + 只往後延伸的 live 分數。
+    不用 `combined_scores()` —— 那支會用 live 去補切分**之前**的日期，而 live 是
+    對全歷史算的，補進來的那段在訓練期內。
+
+    末端不卡 TEST_END：新抓進來的日子（例如 2026-08）本來就是最乾淨的樣本外資料，
+    沒有理由擋在門外（同 `build_fpm_rule_hits` 的理由）。
     """
     frames = []
+    starts = {}
     for key in MODEL_KEYS:
-        part = combined_scores(key, SPLITS, TEST_START, TEST_END)
+        starts[key] = model_period_start(key)
+        part = forward_scores(key, SPLITS)
+        part = part[part["date"] >= starts[key]]
         if part.empty:
             raise SystemExit(
                 f"{key} 在測試期沒有任何分數 —— 請先 `make train`。")
@@ -186,10 +215,12 @@ def build_scores(out_dir: Path) -> pd.DataFrame:
     price_days = pd.to_datetime(
         pd.read_parquet(out_dir / "price_test.parquet", columns=["date"])["date"])
     # 價格會多帶 TEST_END 之後的日子，分數只需要蓋到 TEST_END 為止。
-    in_period = sorted(set(price_days[price_days <= pd.Timestamp(TEST_END)]))
-    if not in_period:
+    in_period_all = sorted(set(price_days[price_days <= pd.Timestamp(TEST_END)]))
+    if not in_period_all:
         raise SystemExit("price_test.parquet 在宣告期間內沒有任何交易日。")
     for key in MODEL_KEYS:
+        # 每個模型只檢查它自己的期間 —— 起點不同（見 model_period_start）
+        in_period = [d for d in in_period_all if d >= starts[key]]
         model_days = set(scores[scores["model"] == key]["date"])
         missing = [d for d in in_period if d not in model_days]
         if missing:
@@ -358,26 +389,18 @@ def build_swing_trades(out_dir: Path) -> pd.DataFrame:
     """
     from engine.backtest.score_exit import simulate_score_exit
     from engine.models.bundle import key_bundle_path
-    from engine.models.bundle import score_path
+    from engine.models.score_source import forward_scores
 
     key = "swing"
     if not key_bundle_path(key).exists():
         logger.warning("找不到 models/bundle_swing.pkl，跳過 swing_trades")
         return pd.DataFrame()
 
-    # ⚠️ 只讀 test / test2 的分數檔，**不要用 `combined_scores()`** —— 那支會補進
-    # `score_live_swing.parquet`，而那份涵蓋 2024-01 起（含訓練期）。公開站是拿來
-    # 檢驗模型的，混進樣本內的分數等於自欺。分成一份連續序列而不是各切分分開跑，
-    # 是為了不讓跨越切分邊界的部位被切成兩筆。
-    parts = []
-    for split in SPLITS:
-        path = score_path(key, split)
-        if path.exists():
-            part = pd.read_parquet(path)[["date", "stock_id", "score"]]
-            part["date"] = pd.to_datetime(part["date"])
-            parts.append(part)
-    scores = (pd.concat(parts, ignore_index=True).drop_duplicates(["date", "stock_id"])
-              if parts else pd.DataFrame())
+    # ⚠️ 走 `forward_scores()` 而不是 `combined_scores()`：後者會把 live 分數裡
+    # **切分開始之前**的日期也補進來，而那份涵蓋訓練期。前者只往後延伸，所以
+    # 測試期之後新抓的日子（例如 2026-08）會進來，訓練期的不會。
+    # 合成一條連續序列而不是各切分分開跑，是為了不讓跨切分的部位被切成兩筆。
+    scores = forward_scores(key, SPLITS)
     if scores.empty:
         logger.warning("swing 沒有分數檔，跳過 swing_trades")
         return pd.DataFrame()
@@ -560,10 +583,16 @@ def _lookahead_note(price: pd.DataFrame) -> str:
 
 
 def write_manifest(out_dir: Path, price: pd.DataFrame, scores: pd.DataFrame) -> None:
+    # 分數末端會往後延伸到最新（見 build_scores），所以宣告的 end 必須跟著走，
+    # 不能照抄 TEST_END —— 那就是不實宣告。start 仍是 TEST_START（最早的模型）。
+    score_end = pd.to_datetime(scores["date"]).max()
     manifest = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "period": {"start": TEST_START, "end": TEST_END,
-                   "trading_days": int(price[price["date"] <= TEST_END]["date"].nunique())},
+        "period": {"start": TEST_START,
+                   "end": score_end.date().isoformat(),
+                   "trading_days": int(price[price["date"] <= score_end]["date"].nunique()),
+                   "note": (f"官方測試期到 {TEST_END}，之後那段是每天新抓進來的資料 "
+                            "—— 模型沒看過，屬於最乾淨的樣本外。")},
         "price_period": {
             "start": TEST_START,
             "end": price["date"].max().date().isoformat(),
@@ -579,8 +608,11 @@ def write_manifest(out_dir: Path, price: pd.DataFrame, scores: pd.DataFrame) -> 
         # exit：這個模型的出場規則。2026-09-05 起模型不再共用同一套出場 ——
         # m1 兩個是價格規則（移動停利/停損），swing 是「分數跌回門檻以下就賣」。
         # 公開站要照這個顯示買賣說明，不能再硬編一套（會對 swing 講錯）。
+        # start：各模型切分起點不同（m1 是 2025-02、swing 是 2025-07，訓練時間不同）。
+        # 不寫出來的話，看到 swing 少了五個月會以為是資料掉了。
         "models": [{"key": k, "name": model_label(k), "threshold": CHOSEN_THRESHOLDS[k],
-                    "exit": _exit_meta(k)}
+                    "exit": _exit_meta(k),
+                    "start": model_period_start(k).date().isoformat()}
                    for k in MODEL_KEYS],
         # 曲線的統計母體是 val_sel，與上面的 period 完全不重疊。檔名不帶 split，
         # 直接讀資料包的人分辨不出來，所以在這裡明講（2026-08-27 稽核 MEDIUM-1）。

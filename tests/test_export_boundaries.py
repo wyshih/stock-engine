@@ -23,22 +23,21 @@ def test_fewer_days_than_lookahead_gives_all_of_them():
     assert price_end_date(after) == after.iloc[-1]
 
 
-def test_exactly_the_twentieth_day_is_chosen():
+def test_price_runs_to_the_last_available_day():
+    """2026-09-06 起契約改了：訊號會延伸到最新，價格就不能卡在 TEST_END+20，
+    否則最新那批訊號在站上只看得到中途 —— 正是 lookahead 當初要避免的事。"""
     after = _days(40)
-    assert price_end_date(after) == after.iloc[LOOKAHEAD_TRADING_DAYS - 1]
+    assert price_end_date(after) == after.iloc[-1]
 
 
-def test_off_by_one_would_be_caught():
-    """第 20 天，不是第 19 或第 21 天。"""
+def test_price_end_is_not_capped_at_the_old_twenty_day_limit():
     after = _days(40)
-    picked = price_end_date(after)
-    assert picked != after.iloc[LOOKAHEAD_TRADING_DAYS - 2]
-    assert picked != after.iloc[LOOKAHEAD_TRADING_DAYS]
+    assert price_end_date(after) != after.iloc[LOOKAHEAD_TRADING_DAYS - 1]
 
 
 def test_days_before_test_end_are_ignored():
     mixed = pd.concat([pd.Series(pd.to_datetime(["2025-06-01"])), _days(40)])
-    assert price_end_date(mixed) == _days(40).iloc[LOOKAHEAD_TRADING_DAYS - 1]
+    assert price_end_date(mixed) == _days(40).iloc[-1]
 
 
 def test_lookahead_note_tells_the_truth_when_short():

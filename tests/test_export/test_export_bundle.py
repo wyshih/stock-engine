@@ -107,9 +107,13 @@ class TestManifest:
         bpb.write_manifest(tmp_path, price, scores)
         manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
 
-        # Assert
-        assert manifest["period"] == {"start": "2025-02-01", "end": "2026-07-31",
-                                      "trading_days": 2}
+        # Assert：end 跟著分數的最後一天走，不是照抄 TEST_END —— 分數會往後延伸到
+        # 最新，宣告卡在 TEST_END 就是不實宣告（2026-09-06 改）。
+        assert manifest["period"]["start"] == "2025-02-01"
+        assert manifest["period"]["end"] == "2025-02-04"
+        assert manifest["period"]["trading_days"] == 2
+        assert "樣本外" in manifest["period"]["note"]
+        assert all("start" in m for m in manifest["models"]), "各模型起點不同，要寫出來"
         assert [m["key"] for m in manifest["models"]] == list(bpb.MODEL_KEYS)
         assert manifest["backtest"]["dedup"] is False
         assert manifest["backtest"]["exit_rules"] == {
