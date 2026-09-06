@@ -343,8 +343,8 @@ else:
                      "`make train`")
 st.sidebar.divider()
 
-PAGES = ["今日推薦", "訊號清單", "個股歷史預測", "技術面分析", "型態規則", "資料預覽", "特徵預覽",
-         "回測結果", "模型成效", "波段模型"]
+PAGES = ["今日推薦", "訊號清單", "個股歷史預測", "技術面分析", "型態規則", "買賣點規則",
+         "資料預覽", "特徵預覽", "回測結果", "模型成效", "波段模型"]
 if "page" not in st.session_state:
     st.session_state.page = PAGES[0]
 for _p in PAGES:
@@ -1630,3 +1630,79 @@ elif page == "波段模型":
             st.caption("報酬是毛報酬（未扣手續費與證交稅），口徑與 `make backtest` 相同。"
                        "台股來回成本約 0.585%。")
             st.dataframe(trades.tail(200), use_container_width=True, hide_index=True)
+
+
+elif page == "買賣點規則":
+    # 跟「型態規則」分開的理由見 engine/app/frontend/trade_rule_panel.py 檔頭：
+    # 那一頁是「訊號日 + 20 天後結果」，這一頁是成對的買點與賣點。
+    from engine.app.frontend import trade_rule_panel as trp
+
+    st.title("🎯 買賣點規則")
+    rules = trp.load_registry()
+    hits = trp.load_hits()
+    if not rules or hits.empty:
+        st.error("找不到 `data/fpm_rules/trade_rules_registry.yaml` 或 "
+                 "`trade_rules_hitlist.csv`。請在 fpm 專案執行 "
+                 "`python src/target_rule.py`。")
+        st.stop()
+
+    rule_by_id = {r["id"]: r for r in rules}
+    rule_id = st.selectbox("規則", list(rule_by_id),
+                           format_func=lambda rid: rule_by_id[rid]["name"],
+                           key="trade_rule_select")
+    rule = rule_by_id[rule_id]
+    rule_hits = hits[hits["rule_id"] == rule_id] if "rule_id" in hits.columns else hits
+
+    st.markdown("**買點**：" + "；".join(rule.get("entry", [])))
+    st.markdown("**賣點**：" + rule.get("exit", "—"))
+    st.caption(f"母體：{rule.get('universe', '—')}　·　"
+               f"每天最多買 {rule.get('max_picks_per_day', '—')} 檔　·　"
+               f"規則挑選期間：{rule.get('selection_window', '—')}")
+
+    with st.expander("⚠️ 這條規則的已知限制（一定要看）", expanded=True):
+        for c in rule.get("caveats", []):
+            st.markdown(f"- {c}")
+
+    stats = trp.overall_stats(rule_hits)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("已結束交易", f"{stats['交易數']:,}")
+    c2.metric("勝率", f"{stats['勝率']:.1%}")
+    c3.metric("平均每筆", f"{stats['平均報酬']:+.2%}")
+    c4.metric("逐期達標", f"{stats['達標期數']}/{stats['總期數']}",
+              help=f"每個半年期勝率 >= {trp.WIN_RATE_TARGET:.0%} 的期數。"
+                   "全期平均會被單一時段主導，一定要看逐期。")
+    c5.metric("未結束", f"{stats['未結束']:,}",
+              help="買了但還沒達標、也還沒抱到上限的部位。這些沒算進勝率。")
+    st.caption(f"中位持有 {stats['中位持有']:.0f} 個交易日。"
+               "報酬是**淨報酬**（已扣來回成本 0.585%），"
+               "與「回測結果」頁的毛報酬口徑不同，不要並排比較。")
+
+    st.subheader("逐半年期")
+    st.caption("⚠️ 勝率只算已結束的交易。達標的部位會先結束、沒達標的還開著，"
+               "所以**未結束筆數多的期間，勝率天生偏高**，不能當定論。")
+    per = trp.period_summary(rule_hits)
+    st.dataframe(
+        per.style.format({"勝率": "{:.1%}", "平均報酬": "{:+.2%}",
+                          "中位報酬": "{:+.2%}", "平均持有": "{:.0f}"}),
+        use_container_width=True, hide_index=True)
+
+    pending = trp.load_pending()
+    if not pending.empty:
+        pend = pending[pending["rule_id"] == rule_id] if "rule_id" in pending.columns else pending
+        if not pend.empty:
+            latest = pend["date"].max()
+            st.subheader(f"最新買點（{latest:%Y-%m-%d} 訊號，隔日開盤買進）")
+            st.dataframe(pend[pend["date"] == latest], use_container_width=True,
+                         hide_index=True)
+
+    stuck = trp.open_positions(rule_hits)
+    if not stuck.empty:
+        st.subheader(f"還沒賣掉的部位（{len(stuck)} 筆）")
+        st.caption("買了但還沒達到 +3%、也還沒抱到上限。不設停損的代價全在這裡 —— "
+                   "帳面可能已經虧很多，只是還沒認列。下面那欄報酬是**用資料最後一天"
+                   "的價格試算**，不是真的賣出。")
+        st.dataframe(stuck.head(50), use_container_width=True, hide_index=True)
+
+    st.subheader("最近成交紀錄")
+    st.dataframe(trp.recent_trades(rule_hits, limit=200),
+                 use_container_width=True, hide_index=True)

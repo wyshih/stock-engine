@@ -291,6 +291,62 @@ def build_fpm_rule_hits(out_dir: Path) -> pd.DataFrame:
     return hits
 
 
+def build_trade_rule_hits(out_dir: Path) -> pd.DataFrame:
+    """買賣點規則的逐筆成交紀錄（買點→賣點成對，不是 20 天後的結果）。
+
+    期間下限一樣卡 TEST_START（CLAUDE.md 硬性規定，2025-02 之前不進 public repo），
+    上限不卡 —— 理由同 `build_fpm_rule_hits`。
+
+    ⚠️ 篩的是 **signal_date**：一筆交易可能買在 2025-01、賣在 2025-06，用賣出日
+    篩會把「規則在管制期之前就發出的訊號」帶進公開資料包。
+    """
+    src = DATA_DIR / "fpm_rules" / "trade_rules_hitlist.csv"
+    if not src.exists():
+        logger.warning("找不到 data/fpm_rules/trade_rules_hitlist.csv，跳過 trade_rule_hits")
+        return pd.DataFrame()
+
+    hits = pd.read_csv(src, parse_dates=["signal_date", "buy_date", "sell_date"])
+    hits = hits[hits["signal_date"] >= TEST_START]
+    if hits.empty:
+        logger.warning(f"trade_rules_hitlist 在 {TEST_START} 之後沒有資料，跳過")
+        return hits
+    hits["stock_id"] = hits["stock_id"].astype(str)
+    hits = hits.sort_values(["signal_date", "stock_id"]).reset_index(drop=True)
+    hits.to_parquet(out_dir / "trade_rule_hits.parquet", index=False, compression="zstd")
+    logger.info(f"trade_rule_hits：{len(hits):,} 筆"
+                f"（{TEST_START}~{hits['signal_date'].max().date()}）")
+    return hits
+
+
+def build_trade_rule_stats(out_dir: Path) -> dict:
+    """買賣點規則清單 + 全歷史統計。
+
+    統計是全歷史彙總（跟 fpm_rule_stats 同一個理由：受 2025-02 那條線限制的是
+    逐筆帶日期的紀錄，不是彙總量）。前端因此會出現「表格只有 2025 之後、
+    但摘要寫著三千多筆」的落差 —— 這是刻意的，前端要明講。
+    """
+    src = DATA_DIR / "fpm_rules" / "trade_rules_registry.yaml"
+    if not src.exists():
+        logger.warning("找不到 data/fpm_rules/trade_rules_registry.yaml，跳過 trade_rule_stats")
+        return {}
+    import yaml
+    registry = yaml.safe_load(src.read_text(encoding="utf-8")) or []
+    payload = {
+        "source": "fpm（獨立專案）的 src/target_rule.py，回測走 fpm/src/evaluate.py",
+        "caveats": [
+            "報酬是**淨報酬**（已扣來回成本 0.585%），與本站其他頁的毛報酬口徑不同",
+            "不設停損：沒達標的部位會抱到持有上限才砍在市價",
+            "下表只列 2025-02 之後的成交（公開資料包的期間限制），"
+            "但規則摘要的統計量是全歷史 2019~2026",
+        ],
+        "rules": registry,
+    }
+    (out_dir / "trade_rule_stats.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
+    logger.info(f"trade_rule_stats：{len(registry)} 條規則")
+    return payload
+
+
 def build_fpm_rule_stats(out_dir: Path) -> dict:
     """fpm 規則清單 + 統計（勝率/lift/樣本外期望報酬）。統計本身是全歷史 walk-forward
     彙總數字，跟 pattern_stats 一樣屬於「全市場全歷史統計」，不受 2025-02 這條線
@@ -505,6 +561,8 @@ def main() -> None:
         build_pattern_stats(out_dir)
     build_fpm_rule_hits(out_dir)
     build_fpm_rule_stats(out_dir)
+    build_trade_rule_hits(out_dir)
+    build_trade_rule_stats(out_dir)
     export_sigcurves(out_dir)
     copy_stock_list(out_dir)
     if not args.skip_backtest:
