@@ -45,6 +45,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_DAYS = 60
 
 
+def stale_models(keys: list[str], latest: pd.Timestamp) -> dict[str, pd.Timestamp | None]:
+    """{模型代號: 它的 live 分數最後一天}，只回落後 `latest` 的那些。
+
+    為什麼要這個檢查：這支本身是增量的，落後了會自己補上 —— 真正的破口是
+    **有人沒跑它**。swing 2026-09-05 訓練完，live 分數是 `train_swing` 自己寫的，
+    之後沒跑過 `make update`，於是它的分數卡在 2026-07-31 而 m1 三個都到 09-03。
+    公開站的八月買賣點整個消失，沒有任何地方報錯（2026-09-06 使用者發現）。
+    """
+    out: dict[str, pd.Timestamp | None] = {}
+    for key in keys:
+        dates = existing_dates(key)
+        last = max(dates) if dates else None
+        if last is None or last < latest:
+            out[key] = last
+    return out
+
+
 def existing_dates(key: str) -> set[pd.Timestamp]:
     path = bundle_mod.live_score_path(key)
     if not path.exists():
@@ -143,6 +160,22 @@ def main() -> None:
             logger.info(f"  {key:16s} {len(fresh):>9,} 列 → {out_path.name}"
                         f"　{time.time() - started:.0f}s")
         del feat
+
+    # 收尾檢查：每個模型的分數都要跟得上特徵檔的最後一天。落後不 raise ——
+    # 這支跑完就該是最新的，落後代表有模型算不出分數（例如缺欄），
+    # 但硬中斷會讓整條 `make update` 停在最後一步，其他產出反而拿不到。
+    latest_feature_date = max(
+        pd.to_datetime(pd.read_parquet(DATA_DIR / f, columns=["date"])["date"]).max()
+        for f in {bundle_mod.features_file_for_key(k) for k in keys})
+    stale = stale_models(keys, latest_feature_date)
+    if stale:
+        detail = "、".join(
+            f"{k}（{v.date() if v is not None else '完全沒有'}）" for k, v in stale.items())
+        logger.error(f"⚠️ 這些模型的分數落後特徵檔最後一天 "
+                     f"{latest_feature_date.date()}：{detail}。"
+                     f"前端與公開資料包會少掉那幾天的訊號，而且不會報錯。")
+    else:
+        logger.info(f"分數都跟上 {latest_feature_date.date()}")
 
     logger.info(f"完成，共 {time.time() - started:.0f}s")
 
