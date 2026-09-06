@@ -64,3 +64,25 @@ def test_page_is_registered_in_page_list():
     src = APP.read_text(encoding="utf-8")
     assert f'"{PAGE}"' in src
     assert f'elif page == "{PAGE}"' in src
+
+
+@needs_data
+def test_all_view_lists_every_trade(at):
+    """「全部」檢視要看得到整份紀錄與績效表，不是只有單日。"""
+    at.run()
+    at.session_state["page"] = PAGE
+    at.run()
+    at.radio(key="trade_rule_view").set_value("全部").run()
+    assert not at.exception, [str(e) for e in at.exception]
+
+    text = " ".join(c.value for c in at.caption)
+    assert "所有買賣紀錄" in text
+    assert "共" in text and "筆" in text
+
+
+@needs_data
+def test_view_switch_offers_both_modes(at):
+    at.run()
+    at.session_state["page"] = PAGE
+    at.run()
+    assert list(at.radio(key="trade_rule_view").options) == ["單日", "全部"]

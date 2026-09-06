@@ -343,6 +343,31 @@ else:
                      "`make train`")
 st.sidebar.divider()
 
+
+def _render_trade_rule_summary(rule: dict, hits, trp, expanded: bool) -> None:
+    """規則的整體績效與已知限制。單日 / 全部兩個檢視都要用，抽出來避免兩份漂移。"""
+    with st.expander("這條規則的整體績效與已知限制", expanded=expanded):
+        for c in rule.get("caveats", []):
+            st.markdown(f"- {c}")
+        stats = trp.overall_stats(hits)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("已結束交易", f"{stats['交易數']:,}")
+        c2.metric("勝率", f"{stats['勝率']:.1%}")
+        c3.metric("平均每筆", f"{stats['平均報酬']:+.2%}")
+        c4.metric("逐期達標", f"{stats['達標期數']}/{stats['總期數']}",
+                  help=f"每個半年期勝率 >= {trp.WIN_RATE_TARGET:.0%} 的期數。")
+        c5.metric("未結束", f"{stats['未結束']:,}")
+        st.caption(f"中位持有 {stats['中位持有']:.0f} 個交易日。報酬是**淨報酬**"
+                   "（已扣來回成本 0.585%），與「回測結果」頁的毛報酬口徑不同。"
+                   "勝率只算已結束的交易 —— 達標的先結束、沒達標的還開著，"
+                   "所以未結束多的期間勝率天生偏高。")
+        st.dataframe(
+            trp.period_summary(hits).style.format(
+                {"勝率": "{:.1%}", "平均報酬": "{:+.2%}",
+                 "中位報酬": "{:+.2%}", "平均持有": "{:.0f}"}),
+            use_container_width=True, hide_index=True)
+
+
 PAGES = ["今日推薦", "訊號清單", "個股歷史預測", "技術面分析", "型態規則", "每日買賣點",
          "資料預覽", "特徵預覽", "回測結果", "模型成效", "波段模型"]
 if "page" not in st.session_state:
@@ -1663,17 +1688,7 @@ elif page == "每日買賣點":
         st.warning("這條規則沒有任何日期資料")
         st.stop()
 
-    _dmin, _dmax = min(days).date(), max(days).date()
-    pick = st.date_input("看哪一天", value=_dmax, min_value=_dmin, max_value=_dmax,
-                         key="trade_rule_day")
-    c_prev, c_next, _ = st.columns([1, 1, 4])
-    _idx = min(range(len(days)), key=lambda i: abs((days[i].date() - pick).days))
-    if c_prev.button("← 前一個有訊號的日子") and _idx + 1 < len(days):
-        st.session_state["trade_rule_day"] = days[_idx + 1].date()
-        st.rerun()
-    if c_next.button("後一個有訊號的日子 →") and _idx > 0:
-        st.session_state["trade_rule_day"] = days[_idx - 1].date()
-        st.rerun()
+    view = st.radio("檢視方式", ["單日", "全部"], horizontal=True, key="trade_rule_view")
 
     sl_names = load_stock_list()
     _name = dict(zip(sl_names["stock_id"], sl_names["stock_name"])) if not sl_names.empty else {}
@@ -1713,56 +1728,66 @@ elif page == "每日買賣點":
     SELL_COLS = ["stock_id", "名稱", "buy_date", "buy_price", "sell_date", "sell_price",
                  "ret", "hold"]
     SIG_COLS = ["stock_id", "名稱", "signal_date"]
+    ALL_COLS = ["stock_id", "名稱", "signal_date", "buy_date", "buy_price",
+                "sell_date", "sell_price", "ret", "hold", "exit_reason",
+                "resolved"]
 
-    buys = trp.buys_on(rule_hits, pick)
-    sells = trp.sells_on(rule_hits, pick)
-    sigs = trp.new_signals_on(rule_hits, rule_pending, pick)
-    held = trp.holding_on(rule_hits, pick)
+    if view == "單日":
+        _dmin, _dmax = min(days).date(), max(days).date()
+        pick = st.date_input("看哪一天", value=_dmax, min_value=_dmin, max_value=_dmax,
+                             key="trade_rule_day")
+        c_prev, c_next, _ = st.columns([1, 1, 4])
+        _idx = min(range(len(days)), key=lambda i: abs((days[i].date() - pick).days))
+        if c_prev.button("← 前一個有訊號的日子") and _idx + 1 < len(days):
+            st.session_state["trade_rule_day"] = days[_idx + 1].date()
+            st.rerun()
+        if c_next.button("後一個有訊號的日子 →") and _idx > 0:
+            st.session_state["trade_rule_day"] = days[_idx - 1].date()
+            st.rerun()
 
-    st.subheader(f"🟢 {pick} 開盤買進（{len(buys)} 檔）")
-    if buys.empty:
-        st.info("這一天沒有要買的。")
-    else:
-        st.caption("訊號是前一個交易日收盤後發出的。後面幾欄是這筆後來的結果。")
-        _jump_table(buys, BUY_COLS, "trp_buy", "buy_date")
 
-    st.subheader(f"🔴 {pick} 開盤賣出（{len(sells)} 檔）")
-    if sells.empty:
-        st.info("這一天沒有要賣的。")
-    else:
-        st.caption("前一個交易日收盤已達 +3%，這天開盤出場。")
-        _jump_table(sells, SELL_COLS, "trp_sell", "sell_date")
+        buys = trp.buys_on(rule_hits, pick)
+        sells = trp.sells_on(rule_hits, pick)
+        sigs = trp.new_signals_on(rule_hits, rule_pending, pick)
+        held = trp.holding_on(rule_hits, pick)
 
-    st.subheader(f"🆕 {pick} 收盤後選出（{len(sigs)} 檔，下一個交易日開盤買）")
-    if sigs.empty:
-        st.info("這一天沒有選到股票。")
-    else:
-        _jump_table(sigs, SIG_COLS, "trp_sig", "signal_date")
-
-    with st.expander(f"這一天手上抱著的部位（{len(held)} 檔）"):
-        if held.empty:
-            st.info("這一天沒有持倉。")
+        st.subheader(f"🟢 {pick} 開盤買進（{len(buys)} 檔）")
+        if buys.empty:
+            st.info("這一天沒有要買的。")
         else:
-            st.dataframe(held, use_container_width=True, hide_index=True)
+            st.caption("訊號是前一個交易日收盤後發出的。後面幾欄是這筆後來的結果。")
+            _jump_table(buys, BUY_COLS, "trp_buy", "buy_date")
+
+        st.subheader(f"🔴 {pick} 開盤賣出（{len(sells)} 檔）")
+        if sells.empty:
+            st.info("這一天沒有要賣的。")
+        else:
+            st.caption("前一個交易日收盤已達 +3%，這天開盤出場。")
+            _jump_table(sells, SELL_COLS, "trp_sell", "sell_date")
+
+        st.subheader(f"🆕 {pick} 收盤後選出（{len(sigs)} 檔，下一個交易日開盤買）")
+        if sigs.empty:
+            st.info("這一天沒有選到股票。")
+        else:
+            _jump_table(sigs, SIG_COLS, "trp_sig", "signal_date")
+
+        with st.expander(f"這一天手上抱著的部位（{len(held)} 檔）"):
+            if held.empty:
+                st.info("這一天沒有持倉。")
+            else:
+                st.dataframe(held, use_container_width=True, hide_index=True)
+
+    else:
+        # 全部：整份買賣紀錄，一樣可以點列跳走勢圖
+        st.caption("整條規則的所有買賣紀錄，新的在最前面。"
+                   "`resolved` 為 False 代表還沒賣掉，那一列的報酬是用資料最後一天"
+                   "的價格試算，不是真的成交。")
+        only_open = st.checkbox("只看還沒賣掉的部位", key="trade_rule_only_open")
+        table = trp.open_positions(rule_hits) if only_open else rule_hits
+        table = table.sort_values("signal_date", ascending=False).reset_index(drop=True)
+        st.caption(f"共 {len(table):,} 筆")
+        _jump_table(table, ALL_COLS, "trp_all", "signal_date")
 
     st.divider()
-    with st.expander("這條規則的整體績效與已知限制", expanded=False):
-        for c in rule.get("caveats", []):
-            st.markdown(f"- {c}")
-        stats = trp.overall_stats(rule_hits)
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("已結束交易", f"{stats['交易數']:,}")
-        c2.metric("勝率", f"{stats['勝率']:.1%}")
-        c3.metric("平均每筆", f"{stats['平均報酬']:+.2%}")
-        c4.metric("逐期達標", f"{stats['達標期數']}/{stats['總期數']}",
-                  help=f"每個半年期勝率 >= {trp.WIN_RATE_TARGET:.0%} 的期數。")
-        c5.metric("未結束", f"{stats['未結束']:,}")
-        st.caption(f"中位持有 {stats['中位持有']:.0f} 個交易日。報酬是**淨報酬**"
-                   "（已扣來回成本 0.585%），與「回測結果」頁的毛報酬口徑不同。"
-                   "勝率只算已結束的交易 —— 達標的先結束、沒達標的還開著，"
-                   "所以未結束多的期間勝率天生偏高。")
-        st.dataframe(
-            trp.period_summary(rule_hits).style.format(
-                {"勝率": "{:.1%}", "平均報酬": "{:+.2%}",
-                 "中位報酬": "{:+.2%}", "平均持有": "{:.0f}"}),
-            use_container_width=True, hide_index=True)
+    # 「全部」檢視就是來看整體的，預設展開；「單日」預設收起來不佔版面
+    _render_trade_rule_summary(rule, rule_hits, trp, expanded=view == "全部")
