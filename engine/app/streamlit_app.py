@@ -344,6 +344,25 @@ else:
 st.sidebar.divider()
 
 
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _swing_trades(splits: tuple, buy_th: float, sell_th: float):
+    """swing 的買賣點。門檻是滑桿可調的，所以每組門檻算一次並快取。
+
+    各切分**合併成一條連續分數序列**再算，不是一個切分跑一次 —— 分開跑會把跨越
+    切分邊界的部位切成兩筆，而且接不上訓練後那段 live 分數。
+    """
+    from engine.backtest.score_exit import simulate_score_exit
+    from engine.models.score_source import combined_scores
+    scores = combined_scores("swing", splits)
+    if scores.empty:
+        return pd.DataFrame()
+    trades, _ = simulate_score_exit(score_path=None, scores=scores,
+                                    buy_threshold=buy_th, sell_threshold=sell_th,
+                                    dedup=False)
+    return trades
+
+
 def _render_trade_rule_summary(rule: dict, hits, trp, expanded: bool) -> None:
     """規則的整體績效與已知限制。單日 / 全部兩個檢視都要用，抽出來避免兩份漂移。"""
     with st.expander("這條規則的整體績效與已知限制", expanded=expanded):
@@ -1663,23 +1682,53 @@ elif page == "每日買賣點":
     from engine.app.frontend import trade_rule_panel as trp
 
     st.title("📅 每日買賣點")
+    # 兩個來源：模型（分數過門檻）與規則（條件式）。買賣點的定義不同，
+    # 但畫面共用 —— 兩邊都正規化成同一組欄位（見 trade_rule_panel.normalize_swing）。
+    sources = {}
+    if trp.SWING_KEY in bundle_mod.available_keys():
+        sources[trp.SWING_KEY] = "波段模型（swing）"
     rules = trp.load_registry()
-    hits = trp.load_hits()
-    pending = trp.load_pending()
-    if not rules or hits.empty:
-        st.error("找不到 `data/fpm_rules/trade_rules_registry.yaml` 或 "
-                 "`trade_rules_hitlist.csv`。請在 fpm 專案執行 "
-                 "`python src/target_rule.py`。")
+    hits_all = trp.load_hits()
+    pending_all = trp.load_pending()
+    for r in rules:
+        sources[r["id"]] = r["name"]
+    if not sources:
+        st.error("沒有任何買賣點來源：既沒有 models/bundle_swing.pkl，"
+                 "也沒有 data/fpm_rules/trade_rules_*。")
         st.stop()
 
-    rule_by_id = {r["id"]: r for r in rules}
-    rule_id = st.selectbox("規則", list(rule_by_id),
-                           format_func=lambda rid: rule_by_id[rid]["name"],
-                           key="trade_rule_select")
-    rule = rule_by_id[rule_id]
-    rule_hits = hits[hits["rule_id"] == rule_id] if "rule_id" in hits.columns else hits
-    rule_pending = (pending[pending["rule_id"] == rule_id]
-                    if not pending.empty and "rule_id" in pending.columns else pending)
+    src = st.selectbox("買賣點來源", list(sources), format_func=lambda k: sources[k],
+                       key="trade_rule_select")
+
+    if src == trp.SWING_KEY:
+        _buy_th = bundle_mod.CHOSEN_THRESHOLDS.get(trp.SWING_KEY, 0.97)
+        _sell_th = (bundle_mod.exit_rule(bundle_mod.load_by_key(trp.SWING_KEY))
+                    or {}).get("sell_threshold", 0.20)
+        cth1, cth2 = st.columns(2)
+        buy_th = cth1.slider("買進門檻（分數 >=）", 0.50, 1.00, float(_buy_th), 0.01,
+                             key="trp_swing_buy")
+        sell_th = cth2.slider("賣出門檻（分數 <=）", 0.00, 0.90, float(_sell_th), 0.01,
+                              key="trp_swing_sell")
+        rule = trp.swing_rule_meta(buy_th, sell_th)
+        _splits = tuple(sp for sp in ("val_sel", "test", "test2")
+                        if bundle_mod.score_path(trp.SWING_KEY, sp).exists())
+        with st.spinner("依門檻計算買賣點..."):
+            rule_hits = trp.normalize_swing(_swing_trades(_splits, buy_th, sell_th))
+        rule_pending = pd.DataFrame()
+        if rule_hits.empty:
+            st.warning("這組門檻在現有分數檔裡沒有任何買賣點")
+            st.stop()
+    else:
+        if hits_all.empty:
+            st.error("找不到 `data/fpm_rules/trade_rules_hitlist.csv`。"
+                     "請在 fpm 專案執行 `python src/target_rule.py`。")
+            st.stop()
+        rule = next(r for r in rules if r["id"] == src)
+        rule_hits = (hits_all[hits_all["rule_id"] == src]
+                     if "rule_id" in hits_all.columns else hits_all)
+        rule_pending = (pending_all[pending_all["rule_id"] == src]
+                        if not pending_all.empty and "rule_id" in pending_all.columns
+                        else pending_all)
 
     st.caption(f"買點：{'；'.join(rule.get('entry', []))}　·　賣點：{rule.get('exit', '—')}")
 

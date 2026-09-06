@@ -204,3 +204,48 @@ def holding_on(hits: pd.DataFrame, day) -> pd.DataFrame:
     d = pd.Timestamp(day)
     held = hits[(hits["buy_date"] <= d) & (hits["sell_date"] > d)]
     return held.sort_values("buy_date").reset_index(drop=True)
+
+
+# ── 來源二：波段模型（swing）────────────────────────────────────────────────
+# swing 的買賣點不是規則，是模型分數：>= 買進門檻進場、<= 賣出門檻出場。
+# 這頁把它正規化成跟規則同一組欄位，兩個來源才共用同一套畫面。
+
+SWING_KEY = "swing"
+
+
+def normalize_swing(trades: pd.DataFrame) -> pd.DataFrame:
+    """`score_exit.simulate_score_exit()` 的輸出 → 本頁的共同欄位。
+
+    `sell_reason == "data_end"` 代表分數還沒跌破門檻、資料就到頭了 —— 那是**還沒
+    賣掉**，不是真的出場，所以 `resolved` 標 False（跟規則那邊同一個道理）。
+    """
+    if trades.empty:
+        return pd.DataFrame(columns=["signal_date", "stock_id", "buy_date", "buy_price",
+                                     "sell_date", "sell_price", "ret", "hold",
+                                     "exit_reason", "resolved", "score"])
+    out = trades.rename(columns={"return": "ret", "sell_reason": "exit_reason"}).copy()
+    for c in ("signal_date", "buy_date", "sell_date"):
+        out[c] = pd.to_datetime(out[c])
+    out["hold"] = (out["sell_date"] - out["buy_date"]).dt.days
+    out["resolved"] = out["exit_reason"] != "data_end"
+    out["stock_id"] = out["stock_id"].astype(str)
+    return out.sort_values(["signal_date", "stock_id"]).reset_index(drop=True)
+
+
+def swing_rule_meta(buy_threshold: float, sell_threshold: float) -> dict:
+    """讓 swing 走跟規則同一組 metadata 欄位，畫面不用分兩套。"""
+    return {
+        "id": SWING_KEY,
+        "name": "波段模型（swing）",
+        "entry": [f"模型分數 >= {buy_threshold:.2f}"],
+        "exit": f"模型分數 <= {sell_threshold:.2f} → 隔日開盤賣出",
+        "universe": "全市場（模型每天對每一檔都給分）",
+        "max_picks_per_day": "不限，過門檻就算",
+        "selection_window": "門檻在驗證期（val_sel）曲線上挑定",
+        "caveats": [
+            "報酬是**毛報酬**（未扣手續費與證交稅），台股來回成本約 0.585%。"
+            "這一點跟規則來源不同，兩邊的數字不可以直接比。",
+            "`data_end` 代表分數還沒跌破賣出門檻、資料就到頭了 —— 那是還沒賣掉。",
+        ],
+        "stats": {},
+    }

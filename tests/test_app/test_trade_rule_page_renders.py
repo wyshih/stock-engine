@@ -52,10 +52,34 @@ def test_page_has_a_date_picker(at):
 
 
 @needs_data
-def test_page_still_states_the_no_stop_loss_risk(at):
+def test_default_source_is_the_swing_model(at):
+    """使用者要的是「這頁看 swing 模型的買賣點」，模型必須是預設來源。"""
     at.run()
     at.session_state["page"] = PAGE
     at.run()
+    sel = at.selectbox(key="trade_rule_select")
+    assert sel.value == "swing"
+    text = " ".join(m.value for m in at.markdown) + " ".join(c.value for c in at.caption)
+    assert "模型分數" in text
+
+
+@needs_data
+def test_swing_source_exposes_both_thresholds(at):
+    at.run()
+    at.session_state["page"] = PAGE
+    at.run()
+    labels = [s.label for s in at.slider]
+    assert any("買進門檻" in l for l in labels)
+    assert any("賣出門檻" in l for l in labels)
+
+
+@needs_data
+def test_rule_source_still_states_the_no_stop_loss_risk(at):
+    """切到規則來源時，「不設停損」的風險一定要出現在畫面上。"""
+    at.run()
+    at.session_state["page"] = PAGE
+    at.run()
+    at.selectbox(key="trade_rule_select").set_value("target_01").run()
     text = " ".join(m.value for m in at.markdown) + " ".join(c.value for c in at.caption)
     assert "停損" in text
 

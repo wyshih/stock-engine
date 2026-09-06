@@ -339,6 +339,72 @@ def build_trade_rule_pending(out_dir: Path) -> pd.DataFrame:
     return pend
 
 
+# 公開站不得自己重算回測（dashboard/CLAUDE.md 規則 8），但使用者要能調門檻 ——
+# 所以在這裡把整個網格都算好送過去，前端只是查表。預設值仍是 CHOSEN_THRESHOLDS
+# 與 bundle 的 exit_rule，網格只是圍著它。
+SWING_BUY_GRID = tuple(round(0.90 + 0.01 * i, 2) for i in range(10))     # 0.90~0.99
+SWING_SELL_GRID = (0.10, 0.15, 0.20, 0.25, 0.30)
+
+
+def build_swing_trades(out_dir: Path) -> pd.DataFrame:
+    """swing 模型在測試期的買賣點（分數過門檻進場、跌破門檻出場）。
+
+    公開站沒有模型也沒有價格全歷史，算不出這個，所以在 engine 端算好再送出去 ——
+    而且是**整個門檻網格**都算，前端調滑桿只是換一組來看，不是重算。
+    預設門檻用 `CHOSEN_THRESHOLDS` 與 bundle 的 `exit_rule`（不硬編，CLAUDE.md 規則 7）。
+
+    ⚠️ `sell_reason == "data_end"` 是「分數還沒跌破、資料就到頭了」＝**還沒賣掉**，
+    不是真的出場。前端要當持倉顯示，不能算進勝率。
+    """
+    from engine.backtest.score_exit import simulate_score_exit
+    from engine.models.bundle import key_bundle_path
+    from engine.models.bundle import score_path
+
+    key = "swing"
+    if not key_bundle_path(key).exists():
+        logger.warning("找不到 models/bundle_swing.pkl，跳過 swing_trades")
+        return pd.DataFrame()
+
+    # ⚠️ 只讀 test / test2 的分數檔，**不要用 `combined_scores()`** —— 那支會補進
+    # `score_live_swing.parquet`，而那份涵蓋 2024-01 起（含訓練期）。公開站是拿來
+    # 檢驗模型的，混進樣本內的分數等於自欺。分成一份連續序列而不是各切分分開跑，
+    # 是為了不讓跨越切分邊界的部位被切成兩筆。
+    parts = []
+    for split in SPLITS:
+        path = score_path(key, split)
+        if path.exists():
+            part = pd.read_parquet(path)[["date", "stock_id", "score"]]
+            part["date"] = pd.to_datetime(part["date"])
+            parts.append(part)
+    scores = (pd.concat(parts, ignore_index=True).drop_duplicates(["date", "stock_id"])
+              if parts else pd.DataFrame())
+    if scores.empty:
+        logger.warning("swing 沒有分數檔，跳過 swing_trades")
+        return pd.DataFrame()
+
+    frames = []
+    for buy_th in SWING_BUY_GRID:
+        for sell_th in SWING_SELL_GRID:
+            trades, _ = simulate_score_exit(score_path=None, scores=scores,
+                                            buy_threshold=buy_th, sell_threshold=sell_th,
+                                            dedup=False)
+            if trades.empty:
+                continue
+            frames.append(trades.assign(buy_threshold=buy_th, sell_threshold=sell_th))
+    if not frames:
+        logger.warning("swing 在測試期沒有任何買賣點，跳過")
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True)
+    out = out[out["signal_date"] >= TEST_START]
+    out["stock_id"] = out["stock_id"].astype(str)
+    out = out.sort_values(["signal_date", "stock_id"]).reset_index(drop=True)
+    out.to_parquet(out_dir / "swing_trades.parquet", index=False, compression="zstd")
+    logger.info(f"swing_trades：{len(out):,} 列，"
+                f"{len(SWING_BUY_GRID)}×{len(SWING_SELL_GRID)} 組門檻")
+    return out
+
+
 def build_trade_rule_stats(out_dir: Path) -> dict:
     """買賣點規則清單 + 全歷史統計。
 
@@ -582,6 +648,7 @@ def main() -> None:
         build_pattern_stats(out_dir)
     build_fpm_rule_hits(out_dir)
     build_fpm_rule_stats(out_dir)
+    build_swing_trades(out_dir)
     build_trade_rule_hits(out_dir)
     build_trade_rule_pending(out_dir)
     build_trade_rule_stats(out_dir)

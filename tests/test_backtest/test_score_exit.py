@@ -93,3 +93,33 @@ def test_zero_or_missing_open_price_is_skipped():
     s = np.array([0.99, 0.99, 0.10, 0.10, 0.10])
     rows = _one_stock(_dates(5), o, s, 0.95, 0.20, 250, dedup=False)
     assert all(r["buy_price"] > 0 for r in rows)
+
+
+def test_scores_can_be_passed_directly_instead_of_a_path(tmp_path, monkeypatch):
+    """跨切分要用同一條連續分數序列算 —— 各切分分開跑會把部位切成兩筆。"""
+    import pandas as pd
+    from engine.backtest import score_exit as se
+
+    dates = pd.bdate_range("2024-01-01", periods=6)
+    price = pd.DataFrame({"date": list(dates), "stock_id": "9999",
+                          "open": [10.0, 10.0, 11.0, 12.0, 13.0, 13.0],
+                          "close": [10.0, 10.0, 11.0, 12.0, 13.0, 13.0]})
+    monkeypatch.setattr(se, "_load_price", lambda: price)
+    scores = pd.DataFrame({"date": list(dates), "stock_id": "9999",
+                           "score": [0.99, 0.5, 0.5, 0.1, 0.1, 0.1]})
+
+    trades, _ = se.simulate_score_exit(score_path=None, buy_threshold=0.97,
+                                       sell_threshold=0.20, scores=scores)
+
+    assert len(trades) == 1
+    assert trades.iloc[0]["sell_reason"] == "score_exit"
+
+
+def test_giving_both_path_and_scores_is_rejected(tmp_path):
+    import pandas as pd
+    import pytest
+    from engine.backtest.score_exit import simulate_score_exit
+
+    with pytest.raises(ValueError, match="只能給一個"):
+        simulate_score_exit(score_path=tmp_path / "x.parquet", buy_threshold=0.97,
+                            sell_threshold=0.2, scores=pd.DataFrame())

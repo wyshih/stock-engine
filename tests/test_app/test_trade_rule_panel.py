@@ -234,3 +234,53 @@ def test_trading_days_are_newest_first_and_include_pending():
 
     assert days[0] == pd.Timestamp("2026-09-01")
     assert days == sorted(days, reverse=True)
+
+
+# ── 波段模型來源（2026-09-06）────────────────────────────────────────────────
+
+def test_normalize_swing_maps_columns_to_the_shared_schema():
+    # Arrange：score_exit 的輸出格式
+    raw = pd.DataFrame({
+        "signal_date": pd.to_datetime(["2026-02-09"]),
+        "stock_id": ["2423"], "score": [0.9756],
+        "buy_date": pd.to_datetime(["2026-02-10"]), "buy_price": [45.05],
+        "sell_date": pd.to_datetime(["2026-04-01"]), "sell_price": [47.45],
+        "return": [0.0533], "sell_reason": ["score_exit"],
+    })
+
+    # Act
+    out = trp.normalize_swing(raw)
+
+    # Assert
+    assert out.iloc[0]["ret"] == 0.0533
+    assert out.iloc[0]["exit_reason"] == "score_exit"
+    assert bool(out.iloc[0]["resolved"]) is True
+
+
+def test_normalize_swing_marks_data_end_as_not_yet_sold():
+    raw = pd.DataFrame({
+        "signal_date": pd.to_datetime(["2026-01-09"]),
+        "stock_id": ["2412"], "score": [0.97],
+        "buy_date": pd.to_datetime(["2026-01-12"]), "buy_price": [133.0],
+        "sell_date": pd.to_datetime(["2026-09-03"]), "sell_price": [137.5],
+        "return": [0.0338], "sell_reason": ["data_end"],
+    })
+
+    out = trp.normalize_swing(raw)
+
+    assert bool(out.iloc[0]["resolved"]) is False
+    assert trp.sells_on(out, "2026-09-03").empty      # 不該叫人賣一檔還抱著的
+
+
+def test_normalize_swing_on_empty_keeps_the_shared_columns():
+    out = trp.normalize_swing(pd.DataFrame())
+    assert out.empty
+    for c in ("signal_date", "buy_date", "sell_date", "ret", "resolved"):
+        assert c in out.columns
+
+
+def test_swing_meta_states_returns_are_gross_not_net():
+    meta = trp.swing_rule_meta(0.97, 0.20)
+    assert "0.97" in meta["entry"][0]
+    assert "0.20" in meta["exit"]
+    assert any("毛報酬" in c for c in meta["caveats"])

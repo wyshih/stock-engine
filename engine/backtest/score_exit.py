@@ -77,21 +77,28 @@ def _one_stock(dates: np.ndarray, open_: np.ndarray, score: np.ndarray,
     return rows
 
 
-def simulate_score_exit(score_path: Path, buy_threshold: float, sell_threshold: float,
+def simulate_score_exit(score_path: Path | None, buy_threshold: float, sell_threshold: float,
                         dedup: bool = False, max_hold_bars: int = DEFAULT_MAX_HOLD,
                         date_start: str | None = None, date_end: str | None = None,
+                        scores: pd.DataFrame | None = None,
                         ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """回傳 (trades, price)，欄位與 `backtest.simulate()` 相同。
 
     `return` 是**未扣成本**的毛報酬，跟 `simulate()` 一致 —— 成本由下游統一處理，
     兩邊口徑才比得起來。
+
+    分數可以給檔案路徑，也可以直接給 DataFrame（`scores`）。要跨切分算的時候用
+    後者：各切分分開跑會把跨越邊界的部位切成兩筆，而且接不上 live 分數。
     """
+    if (score_path is None) == (scores is None):
+        raise ValueError("score_path 與 scores 只能給一個")
     # buy_threshold == 0 是合法的：`summary.py` 的「訊號數對齊」口徑會先把分數檔
     # 篩成每日前 1.5%，母體本身就是進場清單，門檻自然是 0。除此之外進場門檻低於
     # 出場門檻沒有意義（買進當下就滿足賣出條件），擋下來。
     if 0 < buy_threshold <= sell_threshold:
         raise ValueError(f"進場門檻({buy_threshold})必須高於出場門檻({sell_threshold})")
-    score = pd.read_parquet(score_path)
+    score = scores.copy() if scores is not None else pd.read_parquet(score_path)
+    score = score[["date", "stock_id", "score"]]
     score["date"] = pd.to_datetime(score["date"])
     price = _load_price()
     df = price.merge(score, on=["date", "stock_id"], how="left")
